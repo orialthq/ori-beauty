@@ -51,6 +51,7 @@ final class _HomeShellState extends State<HomeShell>
   static const _exitConfirmationWindow = Duration(seconds: 2);
 
   var _tab = _HomeTab.home;
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
   String? _incomingCaptureId;
   var _exitArmed = false;
   var _canReturnToSourceApp = false;
@@ -477,17 +478,22 @@ final class _HomeShellState extends State<HomeShell>
       for (final tab in _tabs)
         switch (tab) {
           _HomeTab.home => TrunHomeScreen(
-            controller: widget.controller,
             onAdd: () =>
                 InboxScreen.openManualInput(context, widget.controller),
-            onOpenInbox: _openContentList,
-            onOpenLibrary: () => _selectTab(_HomeTab.library),
-            onOpenCapture: _openCapture,
+            onOpenMenu: () => _scaffoldKey.currentState?.openDrawer(),
+            onSubmitPlan: planController == null
+                ? null
+                : (draft) => unawaited(_openPlanEditor(prefill: draft)),
+            planSources: _planSources(),
           ),
-          _HomeTab.library => ProductsScreen(controller: widget.controller),
+          _HomeTab.library => ProductsScreen(
+            controller: widget.controller,
+            onOpenMenu: () => _scaffoldKey.currentState?.openDrawer(),
+          ),
           _HomeTab.shared => SharedInboxScreen(
             entries: widget.controller.sharedInbox,
             onOpen: _openSharedTip,
+            onOpenMenu: () => _scaffoldKey.currentState?.openDrawer(),
           ),
           _HomeTab.plans => PlansScreen(
             plans: planController != null && planController.isInitialized
@@ -496,59 +502,12 @@ final class _HomeShellState extends State<HomeShell>
             onCreatePlan: _openPlanEditor,
             onOpenPlan: _openPlanDetail,
             onOpenPast: _openPastPlans,
+            onOpenMenu: () => _scaffoldKey.currentState?.openDrawer(),
           ),
         },
     ];
 
-    final destinations = <NavigationDestination>[
-      for (final tab in _tabs)
-        switch (tab) {
-          _HomeTab.home => const NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home_rounded),
-            label: '홈',
-          ),
-          _HomeTab.library => const NavigationDestination(
-            icon: Icon(Icons.bookmark_border_rounded),
-            selectedIcon: Icon(Icons.bookmark_rounded),
-            label: '정리함',
-          ),
-          _HomeTab.shared => NavigationDestination(
-            icon: Badge.count(
-              count: sharedCount,
-              isLabelVisible: sharedCount > 0,
-              child: const Icon(Icons.move_to_inbox_outlined),
-            ),
-            selectedIcon: Badge.count(
-              count: sharedCount,
-              isLabelVisible: sharedCount > 0,
-              child: const Icon(Icons.move_to_inbox_rounded),
-            ),
-            label: '공유함',
-          ),
-          _HomeTab.plans => const NavigationDestination(
-            icon: Icon(Icons.notifications_none_rounded),
-            selectedIcon: Icon(Icons.notifications_rounded),
-            label: '계획함',
-          ),
-        },
-    ];
     final showingPlans = planController != null && _tab == _HomeTab.plans;
-    final navigationBackground = showingPlans
-        ? AppTheme.planSurface
-        : AppTheme.surface;
-    final navigationBorder = showingPlans
-        ? AppTheme.planBorder
-        : AppTheme.border;
-    final navigationIndicator = showingPlans
-        ? AppTheme.planMauveSoft
-        : AppTheme.primarySoft;
-    final navigationSelected = showingPlans
-        ? AppTheme.planMauve
-        : AppTheme.primary;
-    final navigationUnselected = showingPlans
-        ? AppTheme.planSubtle
-        : AppTheme.subtle;
     final systemUiStyle = showingPlans
         ? const SystemUiOverlayStyle(
             statusBarColor: Colors.transparent,
@@ -579,10 +538,21 @@ final class _HomeShellState extends State<HomeShell>
           }
         },
         child: Scaffold(
+          key: _scaffoldKey,
+          drawerEnableOpenDragGesture: false,
+          drawer: _HomeDrawer(
+            tabs: _tabs,
+            current: _tab,
+            sharedCount: sharedCount,
+            onSelect: _selectTab,
+            onOpenContents: _openContentList,
+            onOpenPast: planController == null ? null : _openPastPlans,
+          ),
           body: Stack(
             children: [
+              // Bottom included now that nothing sits under the screens. The
+              // tab bar used to hold them clear of the home indicator.
               SafeArea(
-                bottom: false,
                 child: IndexedStack(index: _selectedIndex, children: screens),
               ),
               SafeArea(
@@ -622,39 +592,6 @@ final class _HomeShellState extends State<HomeShell>
                 ),
               ),
             ],
-          ),
-          bottomNavigationBar: DecoratedBox(
-            decoration: BoxDecoration(
-              color: navigationBackground,
-              border: Border(top: BorderSide(color: navigationBorder)),
-            ),
-            child: NavigationBarTheme(
-              data: NavigationBarThemeData(
-                backgroundColor: navigationBackground,
-                elevation: 0,
-                height: 72,
-                indicatorColor: navigationIndicator,
-                iconTheme: WidgetStateProperty.resolveWith((states) {
-                  final selected = states.contains(WidgetState.selected);
-                  return IconThemeData(
-                    color: selected ? navigationSelected : navigationUnselected,
-                  );
-                }),
-                labelTextStyle: WidgetStateProperty.resolveWith((states) {
-                  final selected = states.contains(WidgetState.selected);
-                  return TextStyle(
-                    color: selected ? navigationSelected : navigationUnselected,
-                    fontSize: 12,
-                    fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
-                  );
-                }),
-              ),
-              child: NavigationBar(
-                selectedIndex: _selectedIndex,
-                onDestinationSelected: _selectDestination,
-                destinations: destinations,
-              ),
-            ),
           ),
         ),
       ),
@@ -832,7 +769,12 @@ final class _HomeShellState extends State<HomeShell>
     }
   }
 
-  Future<void> _openPlanEditor() async {
+  /// Makes a plan, from the tab's own button or from what was typed on home.
+  ///
+  /// [prefill] fills the editor's fields and changes nothing else. Everything
+  /// after it — the questions, the to-do suggestion, the saving — is the one
+  /// flow the 계획함 button has always used.
+  Future<void> _openPlanEditor({PlanDraft? prefill}) async {
     final controller = widget.planController;
     if (controller == null) return;
     if (!controller.isInitialized) {
@@ -840,7 +782,11 @@ final class _HomeShellState extends State<HomeShell>
       if (!mounted || !controller.isInitialized) return;
     }
 
-    final draft = await PlanEditorScreen.open(context, sources: _planSources());
+    final draft = await PlanEditorScreen.open(
+      context,
+      sources: _planSources(),
+      prefill: prefill,
+    );
     if (!mounted || draft == null) return;
 
     final usesLocation = draft.triggerKind != PlanDraftTriggerKind.time;
@@ -1280,6 +1226,227 @@ final class _HomeShellState extends State<HomeShell>
   }
 }
 
+/// The bar that slides in from the left.
+///
+/// Everywhere the app goes, in one list. The tab bar still carries the four a
+/// reader visits daily; this also holds the two that only ever had doors — 콘텐츠
+/// and 지난함 — so there is one place that answers "what else is in here".
+final class _HomeDrawer extends StatelessWidget {
+  const _HomeDrawer({
+    required this.tabs,
+    required this.current,
+    required this.sharedCount,
+    required this.onSelect,
+    required this.onOpenContents,
+    required this.onOpenPast,
+  });
+
+  final List<_HomeTab> tabs;
+  final _HomeTab current;
+  final int sharedCount;
+  final ValueChanged<_HomeTab> onSelect;
+  final VoidCallback onOpenContents;
+
+  /// Null when there are no plans at all, and then the drawer does not offer a
+  /// door to what is behind them.
+  final VoidCallback? onOpenPast;
+
+  @override
+  Widget build(BuildContext context) {
+    return Drawer(
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.horizontal(right: Radius.circular(28)),
+      ),
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // The wordmark lives here now. It left home's own header when the
+            // menu took that corner, and a drawer is where an app's name can
+            // sit without spending a row of the screen behind it.
+            const Padding(
+              padding: EdgeInsets.fromLTRB(24, 26, 24, 22),
+              // Shrunk rather than clipped: at a large text size the name and
+              // its badge are wider than a drawer.
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Row(
+                  children: [
+                    Text(
+                      'TRUN ON',
+                      style: TextStyle(
+                        color: AppTheme.ink,
+                        fontSize: 20,
+                        letterSpacing: -0.6,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    SizedBox(width: 8),
+                    DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: AppTheme.primarySoft,
+                        borderRadius: BorderRadius.all(Radius.circular(999)),
+                      ),
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        child: Text(
+                          'BETA',
+                          style: TextStyle(
+                            color: AppTheme.primary,
+                            fontSize: 11,
+                            letterSpacing: 0.6,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                children: [
+                  for (final tab in tabs)
+                    _DrawerItem(
+                      icon: _tabIcon(tab),
+                      label: _tabLabel(tab),
+                      badge: tab == _HomeTab.shared ? sharedCount : 0,
+                      selected: tab == current,
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        onSelect(tab);
+                      },
+                    ),
+                  const Divider(height: 26, indent: 16, endIndent: 16),
+                  _DrawerItem(
+                    icon: Icons.inbox_rounded,
+                    label: '콘텐츠',
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      onOpenContents();
+                    },
+                  ),
+                  if (onOpenPast case final openPast?)
+                    _DrawerItem(
+                      icon: Icons.history_rounded,
+                      label: '지난함',
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        openPast();
+                      },
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _tabLabel(_HomeTab tab) => switch (tab) {
+    _HomeTab.home => '홈',
+    _HomeTab.library => '정리함',
+    _HomeTab.shared => '공유함',
+    _HomeTab.plans => '계획함',
+  };
+
+  static IconData _tabIcon(_HomeTab tab) => switch (tab) {
+    _HomeTab.home => Icons.home_rounded,
+    _HomeTab.library => Icons.bookmark_rounded,
+    _HomeTab.shared => Icons.move_to_inbox_rounded,
+    _HomeTab.plans => Icons.notifications_rounded,
+  };
+}
+
+final class _DrawerItem extends StatelessWidget {
+  const _DrawerItem({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.badge = 0,
+    this.selected = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final int badge;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = selected ? AppTheme.primary : AppTheme.ink;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Material(
+        key: Key('drawer-item-$label'),
+        color: selected ? AppTheme.primarySoft : Colors.transparent,
+        borderRadius: BorderRadius.circular(14),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 52),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Icon(
+                    icon,
+                    size: 20,
+                    color: selected ? AppTheme.primary : AppTheme.muted,
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        color: ink,
+                        fontSize: 15,
+                        fontWeight: selected
+                            ? FontWeight.w800
+                            : FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  if (badge > 0)
+                    DecoratedBox(
+                      decoration: const BoxDecoration(
+                        color: AppTheme.accent,
+                        shape: BoxShape.circle,
+                      ),
+                      child: SizedBox.square(
+                        dimension: 22,
+                        child: Center(
+                          child: Text(
+                            '$badge',
+                            style: const TextStyle(
+                              color: Color(0xFF1A0B08),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 enum _PlanMenuAction {
   openSource,
   pause,
@@ -1642,6 +1809,7 @@ final class _IncomingCaptureCard extends StatelessWidget {
                     ),
                   ),
                   IconButton(
+                    key: const Key('incoming-capture-dismiss'),
                     tooltip: '닫기',
                     onPressed: onDismiss,
                     icon: const Icon(

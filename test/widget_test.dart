@@ -22,8 +22,8 @@ void main() {
 
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
     expect(app.title, 'Trun On');
-    expect(find.text('TRUN ON'), findsOneWidget);
-    expect(find.text('1개만 확인하면 끝'), findsOneWidget);
+    expect(find.byKey(const Key('shell-menu-button')), findsOneWidget);
+    expect(find.byKey(const Key('home-prompt-field')), findsOneWidget);
     expect(find.textContaining('TODAY'), findsNothing);
     expect(find.textContaining('READY TO SAVE'), findsNothing);
     expect(find.textContaining('오늘 들어온 걸'), findsNothing);
@@ -32,19 +32,25 @@ void main() {
     expect(find.text('발견만으로는 달라지지 않으니까.'), findsNothing);
     expect(find.text('정리된 내용을 확인하고 폴더에 넣어 두세요.'), findsNothing);
     expect(find.text('정리된 내용을 확인하고 저장해 주세요.'), findsNothing);
+    // The next-step card and the category roulette left home; the box that
+    // starts a plan took the space they were using.
+    expect(find.text('1개만 확인하면 끝'), findsNothing);
     expect(
       find.byKey(const PageStorageKey('home-category-roulette')),
-      findsOneWidget,
+      findsNothing,
     );
     expect(find.byKey(const Key('home-inbox-card')), findsNothing);
     expect(find.byKey(const Key('home-library-card')), findsNothing);
     expect(find.text('들어온 것'), findsNothing);
     expect(find.text('최근 들어온 것'), findsNothing);
     expect(find.text('정리함 보기'), findsNothing);
-    expect(find.text('최근 콘텐츠'), findsOneWidget);
-    // 콘텐츠 left the tab bar; 공유함 took the place it barely earned.
-    expect(find.text('콘텐츠'), findsNothing);
-    expect(find.text('공유함'), findsOneWidget);
+    // Home keeps nothing but the box: no list of the newest, and no row
+    // standing in for one. 콘텐츠 is in the drawer.
+    expect(find.text('최근 콘텐츠'), findsNothing);
+    expect(find.byKey(const Key('home-content-door')), findsNothing);
+    // The tab bar is gone; every screen is behind the menu now.
+    expect(find.byType(NavigationBar), findsNothing);
+    expect(find.text('공유함'), findsNothing);
     expect(find.text('INPUT → 정리'), findsNothing);
     expect(find.byIcon(Icons.auto_awesome_outlined), findsNothing);
     expect(find.text('비교'), findsNothing);
@@ -64,8 +70,7 @@ void main() {
     // for the tab bar underneath it.
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();
-    await tester.tap(find.byIcon(Icons.bookmark_border_rounded).last);
-    await tester.pumpAndSettle();
+    await _openLibrary(tester);
 
     expect(find.text('정리함'), findsWidgets);
     expect(find.text('A R C H I V E'), findsNothing);
@@ -141,8 +146,7 @@ void main() {
       'group-baumlab-pore-balance',
     );
 
-    await tester.tap(find.byIcon(Icons.bookmark_border_rounded).last);
-    await tester.pumpAndSettle();
+    await _openLibrary(tester);
     final archive = find.byKey(const PageStorageKey<String>('products'));
     final archiveScroll = find
         .descendant(of: archive, matching: find.byType(Scrollable))
@@ -194,8 +198,7 @@ void main() {
     await controller.initialize();
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byIcon(Icons.bookmark_border_rounded).last);
-    await tester.pumpAndSettle();
+    await _openLibrary(tester);
 
     expect(find.byKey(const Key('folder-roulette')), findsOneWidget);
     expect(find.byKey(const Key('top-folder-wheel')), findsOneWidget);
@@ -544,8 +547,7 @@ void main() {
     await controller.initialize();
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byIcon(Icons.bookmark_border_rounded).last);
-    await tester.pumpAndSettle();
+    await _openLibrary(tester);
     expect(find.text('정리함'), findsWidgets);
 
     service.add(
@@ -560,7 +562,7 @@ void main() {
 
     // A share used to yank the reader to the 콘텐츠 tab. There is no such tab
     // now, so it lands on home and the banner announces it there.
-    expect(find.text('TRUN ON'), findsWidgets);
+    expect(find.byKey(const Key('shell-menu-button')), findsOneWidget);
     expect(find.text('정리가 준비됐어요'), findsOneWidget);
     expect(find.text('탭해서 내용을 확인해 주세요'), findsOneWidget);
 
@@ -639,13 +641,12 @@ void main() {
       await controller.initialize();
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byIcon(Icons.bookmark_border_rounded).last);
-      await tester.pumpAndSettle();
+      await _openLibrary(tester);
       expect(find.text('정리함'), findsWidgets);
 
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
-      expect(find.text('TRUN ON'), findsOneWidget);
+      expect(find.byKey(const Key('shell-menu-button')), findsOneWidget);
       expect(find.text('한 번 더 누르면 앱을 종료해요.'), findsNothing);
 
       await tester.binding.handlePopRoute();
@@ -705,7 +706,7 @@ void main() {
 
       // The share lands on home already, so one back is the whole journey
       // out — it used to take two because a tab sat in between.
-      expect(find.text('TRUN ON'), findsWidgets);
+      expect(find.byKey(const Key('shell-menu-button')), findsOneWidget);
 
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
@@ -740,16 +741,34 @@ void main() {
     // Back out of the pushed list before reaching for the tab bar under it.
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();
-    await tester.tap(find.byIcon(Icons.bookmark_border_rounded).last);
-    await tester.pumpAndSettle();
+    await _openLibrary(tester);
     expect(tester.takeException(), isNull);
   });
 }
 
 /// 콘텐츠 is no longer a tab; home's 전체 보기 is the door.
-Future<void> _openContentList(WidgetTester tester) async {
-  await tester.ensureVisible(find.text('전체 보기'));
+/// Opens 정리함 the only way there is now: through the drawer.
+Future<void> _openLibrary(WidgetTester tester) async {
+  await _openDrawer(tester);
+  await tester.tap(find.byKey(const Key('drawer-item-정리함')));
   await tester.pumpAndSettle();
-  await tester.tap(find.text('전체 보기'));
+}
+
+Future<void> _openDrawer(WidgetTester tester) async {
+  // An arriving capture is announced across the top of home, over the row the
+  // menu sits in. A reader has to put it away before reaching the menu, and so
+  // does this.
+  final banner = find.byKey(const Key('incoming-capture-dismiss'));
+  if (banner.evaluate().isNotEmpty) {
+    await tester.tap(banner);
+    await tester.pumpAndSettle();
+  }
+  await tester.tap(find.byKey(const Key('shell-menu-button')));
+  await tester.pumpAndSettle();
+}
+
+Future<void> _openContentList(WidgetTester tester) async {
+  await _openDrawer(tester);
+  await tester.tap(find.byKey(const Key('drawer-item-콘텐츠')));
   await tester.pumpAndSettle();
 }

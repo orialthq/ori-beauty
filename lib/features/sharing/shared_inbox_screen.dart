@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
+import '../common/shell_menu_button.dart';
 import '../../state/app_controller.dart';
 import '../common/content_folder_ui.dart';
 
@@ -14,11 +15,15 @@ final class SharedInboxScreen extends StatelessWidget {
   const SharedInboxScreen({
     required this.entries,
     required this.onOpen,
+    this.onOpenMenu,
     super.key,
   });
 
   final List<SharedTipEntry> entries;
   final ValueChanged<SharedTipEntry> onOpen;
+
+  /// Opens the drawer. Every screen carries this now that the tab bar is gone.
+  final VoidCallback? onOpenMenu;
 
   @override
   Widget build(BuildContext context) {
@@ -28,30 +33,10 @@ final class SharedInboxScreen extends StatelessWidget {
         bottom: false,
         child: ListView(
           key: const PageStorageKey('shared-inbox'),
-          padding: const EdgeInsets.fromLTRB(22, 24, 22, 44),
+          padding: const EdgeInsets.fromLTRB(22, 10, 22, 44),
           children: [
-            const Text(
-              'INBOX',
-              style: TextStyle(
-                color: AppTheme.subtle,
-                fontSize: 11,
-                height: 1.2,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 3,
-              ),
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              '공유함',
-              style: TextStyle(
-                color: AppTheme.ink,
-                fontSize: 34,
-                height: 1.1,
-                fontWeight: FontWeight.w900,
-                letterSpacing: -1.2,
-              ),
-            ),
-            const SizedBox(height: 22),
+            ShellHeader(onOpenMenu: onOpenMenu, title: '공유함'),
+            const SizedBox(height: 14),
             const _Explainer(),
             const SizedBox(height: 20),
             if (entries.isEmpty)

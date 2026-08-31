@@ -20,40 +20,74 @@ import 'package:ori_beauty/state/app_controller.dart';
 import 'package:ori_beauty/state/plan_controller.dart';
 
 void main() {
-  testWidgets(
-    'shows an injected plan controller as the fourth HomeShell destination',
-    (tester) async {
-      // 지난함 is not among these. It is a page 계획함 pushes, not a place the
-      // bar goes — the bar is for where a reader goes daily.
-      final fixture = await _HomeShellPlansFixture.create();
-      addTearDown(fixture.dispose);
+  testWidgets('reaches 계획함 with no tab bar left to reach it by', (
+    tester,
+  ) async {
+    // Every screen moved behind the menu. The bar that used to carry four of
+    // them is gone, and 지난함 — never on it — is in the same list now.
+    final fixture = await _HomeShellPlansFixture.create();
+    addTearDown(fixture.dispose);
 
-      await _pumpHomeShell(tester, fixture);
+    await _pumpHomeShell(tester, fixture);
 
-      final navigationBarFinder = find.byType(NavigationBar);
-      final navigationBar = tester.widget<NavigationBar>(navigationBarFinder);
-      final plansDestination = find.descendant(
-        of: navigationBarFinder,
-        matching: find.text('계획함'),
-      );
+    expect(find.byType(NavigationBar), findsNothing);
 
-      expect(navigationBar.destinations, hasLength(4));
-      expect(plansDestination, findsOneWidget);
-      expect(
-        find.descendant(of: navigationBarFinder, matching: find.text('지난함')),
-        findsNothing,
-      );
+    await _openPlans(tester);
 
-      await tester.tap(plansDestination);
-      await tester.pumpAndSettle();
+    expect(find.byType(PlansScreen), findsOneWidget);
+    expect(
+      find.byKey(const PageStorageKey<String>('plans-screen')),
+      findsOneWidget,
+    );
+  });
 
-      expect(find.byType(PlansScreen), findsOneWidget);
-      expect(
-        find.byKey(const PageStorageKey<String>('plans-screen')),
-        findsOneWidget,
-      );
-    },
-  );
+  testWidgets('a prompt sent from home opens 계획 만들기 with it as the title', (
+    tester,
+  ) async {
+    final fixture = await _HomeShellPlansFixture.create();
+    addTearDown(fixture.dispose);
+
+    await _pumpHomeShell(tester, fixture);
+
+    await tester.enterText(
+      find.byKey(const Key('home-prompt-field')),
+      '성수에서 저장한 식당 가보기',
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('home-prompt-send')));
+    await tester.pumpAndSettle();
+
+    // The same editor the 계획함 button opens, on its first question rather
+    // than on a plan being edited.
+    expect(find.byType(PlanEditorScreen), findsOneWidget);
+    expect(find.text('계획 만들기'), findsOneWidget);
+    expect(find.text('성수에서 저장한 식당 가보기'), findsOneWidget);
+  });
+
+  testWidgets('the menu opens a drawer that reaches every screen', (
+    tester,
+  ) async {
+    final fixture = await _HomeShellPlansFixture.create();
+    addTearDown(fixture.dispose);
+
+    await _pumpHomeShell(tester, fixture);
+    await tester.tap(find.byKey(const Key('shell-menu-button')));
+    await tester.pumpAndSettle();
+
+    // The wordmark moved in here when the menu took its corner.
+    expect(find.text('TRUN ON'), findsOneWidget);
+    // The four the tab bar carries, plus the two that only ever had doors.
+    for (final label in ['홈', '공유함', '정리함', '계획함', '콘텐츠', '지난함']) {
+      expect(find.byKey(Key('drawer-item-$label')), findsOneWidget);
+    }
+
+    await tester.tap(find.byKey(const Key('drawer-item-계획함')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(PlansScreen), findsOneWidget);
+    // It closes behind itself rather than staying over what it opened.
+    expect(find.byKey(const Key('drawer-item-계획함')), findsNothing);
+  });
 
   testWidgets('finishing a plan opens the door to 지난함 and puts it behind it', (
     tester,
@@ -63,13 +97,7 @@ void main() {
     final plan = await fixture.createPlan();
 
     await _pumpHomeShell(tester, fixture);
-    await tester.tap(
-      find.descendant(
-        of: find.byType(NavigationBar),
-        matching: find.text('계획함'),
-      ),
-    );
-    await tester.pumpAndSettle();
+    await _openPlans(tester);
 
     // Nothing is over yet, so there is no door to a screen with nothing on it.
     expect(find.byKey(const Key('plans-past-button')), findsNothing);
@@ -126,13 +154,7 @@ void main() {
     );
 
     await _pumpHomeShell(tester, fixture);
-    await tester.tap(
-      find.descendant(
-        of: find.byType(NavigationBar),
-        matching: find.text('계획함'),
-      ),
-    );
-    await tester.pumpAndSettle();
+    await _openPlans(tester);
 
     // The card counts back from the 31st, so the plan itself must too.
     expect(find.text('8/28'), findsNothing);
@@ -150,12 +172,7 @@ void main() {
 
     await _pumpHomeShell(tester, fixture);
 
-    final plansDestination = find.descendant(
-      of: find.byType(NavigationBar),
-      matching: find.text('계획함'),
-    );
-    await tester.tap(plansDestination);
-    await tester.pumpAndSettle();
+    await _openPlans(tester);
     await tester.tap(find.byKey(const Key('plans-create-button')));
     await tester.pumpAndSettle();
 
@@ -208,9 +225,16 @@ void main() {
     final plan = await fixture.createPlan(sourceCaptureId: target.raw.id);
 
     await _pumpHomeShell(tester, fixture);
-    final recentTitle = find.text(_captureTitle(target));
-    await tester.ensureVisible(recentTitle);
-    await tester.tap(recentTitle);
+    // Through the drawer's 콘텐츠, which is where the list moved when home kept
+    // nothing but the box.
+    await tester.tap(find.byKey(const Key('shell-menu-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('drawer-item-콘텐츠')));
+    await tester.pumpAndSettle();
+    final row = find.byKey(Key('capture-card-${target.raw.id}'));
+    await tester.ensureVisible(row);
+    await tester.pumpAndSettle();
+    await tester.tap(row);
     await tester.pumpAndSettle();
 
     _expectCaptureDetail(target, tester);
@@ -312,22 +336,25 @@ void main() {
   });
 }
 
+/// Opens 계획함 the only way there is: through the menu.
+Future<void> _openPlans(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('shell-menu-button')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('drawer-item-계획함')));
+  await tester.pumpAndSettle();
+}
+
 Future<void> _openPlanActions(WidgetTester tester, String planId) async {
   // A previous round may have left the plan's own page on top of the shell.
-  // The shell is what carries the tab bar, so come back to it first.
-  while (find.byType(NavigationBar).evaluate().isEmpty) {
+  // Neither 계획함 nor home's menu on screen means something is pushed over
+  // both, so come back down to the shell first.
+  while (find.byType(PlansScreen).evaluate().isEmpty &&
+      find.byKey(const Key('shell-menu-button')).evaluate().isEmpty) {
     await tester.pageBack();
     await tester.pumpAndSettle();
   }
-  final plansDestination = find.descendant(
-    of: find.byType(NavigationBar),
-    matching: find.text('계획함'),
-  );
-  // By what is on screen rather than by which index is lit: 계획함 has moved
-  // along the bar twice now, and a number here would have to move with it.
   if (find.byType(PlansScreen).evaluate().isEmpty) {
-    await tester.tap(plansDestination);
-    await tester.pumpAndSettle();
+    await _openPlans(tester);
   }
   final card = find.byKey(Key('plan-card-$planId'));
   await tester.ensureVisible(card);
@@ -348,14 +375,6 @@ List<TriggerPlanEvent> _interactionEvents(
     .events
     .where((event) => event.kind == kind)
     .toList(growable: false);
-
-String _captureTitle(CaptureRecord capture) {
-  final structured = capture.analysis?.structuredContent?.title.value?.trim();
-  if (structured != null && structured.isNotEmpty) return structured;
-  final mention = capture.primaryMention?.name.value?.trim();
-  if (mention != null && mention.isNotEmpty) return mention;
-  return capture.normalized.normalizedText.trim();
-}
 
 void _expectCaptureDetail(CaptureRecord capture, WidgetTester tester) {
   if (capture.analysis?.structuredContent != null) {

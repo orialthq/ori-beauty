@@ -4,6 +4,7 @@ import '../../core/app_theme.dart';
 import '../../data/plan_recommendation_service.dart';
 import '../../domain/models.dart';
 import '../common/content_folder_ui.dart';
+import '../common/shell_menu_button.dart';
 
 /// Presentation-only lifecycle used by [PlansScreen].
 ///
@@ -130,6 +131,7 @@ final class PlansScreen extends StatelessWidget {
     required this.onCreatePlan,
     this.onOpenPlan,
     this.onOpenPast,
+    this.onOpenMenu,
     this.today,
     super.key,
   });
@@ -140,6 +142,9 @@ final class PlansScreen extends StatelessWidget {
 
   /// Opens 지난함. The header offers it only once something is in there.
   final VoidCallback? onOpenPast;
+
+  /// Opens the drawer. Every screen carries this now that the tab bar is gone.
+  final VoidCallback? onOpenMenu;
 
   /// The day countdowns are measured against. Defaults to now; tests pin it so
   /// a D-day does not change under them overnight.
@@ -162,9 +167,10 @@ final class PlansScreen extends StatelessWidget {
             key: const PageStorageKey('plans-screen'),
             slivers: [
               SliverPadding(
-                padding: const EdgeInsets.fromLTRB(22, 24, 22, 0),
+                padding: const EdgeInsets.fromLTRB(22, 10, 22, 0),
                 sliver: SliverToBoxAdapter(
                   child: _PlansHeader(
+                    onOpenMenu: onOpenMenu,
                     onCreatePlan: onCreatePlan,
                     pastCount: pastCount,
                     onOpenPast: onOpenPast,
@@ -283,55 +289,39 @@ final class _PlansHeader extends StatelessWidget {
     required this.onCreatePlan,
     required this.pastCount,
     required this.onOpenPast,
+    required this.onOpenMenu,
   });
 
   final VoidCallback onCreatePlan;
   final int pastCount;
   final VoidCallback? onOpenPast;
+  final VoidCallback? onOpenMenu;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        const Expanded(
-          child: Text(
-            '계획함',
-            style: TextStyle(
-              color: AppTheme.planInk,
-              fontSize: 34,
-              height: 1.1,
-              fontWeight: FontWeight.w900,
-              letterSpacing: -1.2,
-            ),
-          ),
-        ),
-        // Beside the title rather than under it, where it costs no height at
-        // all and stays put however far the list is scrolled. A door to what is
-        // over does not deserve a row above what is due today.
-        //
+    return ShellHeader(
+      onOpenMenu: onOpenMenu,
+      title: '계획함',
+      ink: AppTheme.planInk,
+      actions: [
         // Only once there is something behind it: a clock face means little on
         // its own, and the count is what says what the button is for. With
         // nothing there it would open an empty screen and explain nothing.
-        if (pastCount > 0 && onOpenPast != null) ...[
-          const SizedBox(width: 10),
+        if (pastCount > 0 && onOpenPast != null)
           Semantics(
             button: true,
             label: '지난함, 지난 계획 $pastCount개',
             child: Material(
               key: const Key('plans-past-button'),
-              color: AppTheme.planSurface,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: const BorderSide(color: AppTheme.planBorder),
-              ),
+              color: Colors.transparent,
+              shape: const StadiumBorder(),
               clipBehavior: Clip.antiAlias,
               child: InkWell(
                 onTap: onOpenPast,
                 child: SizedBox(
-                  height: 48,
+                  height: 40,
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -340,12 +330,12 @@ final class _PlansHeader extends StatelessWidget {
                           color: AppTheme.planMuted,
                           size: 19,
                         ),
-                        const SizedBox(width: 6),
+                        const SizedBox(width: 5),
                         Text(
                           '$pastCount',
                           style: const TextStyle(
                             color: AppTheme.planInk,
-                            fontSize: 15,
+                            fontSize: 14,
                             fontWeight: FontWeight.w800,
                           ),
                         ),
@@ -356,26 +346,19 @@ final class _PlansHeader extends StatelessWidget {
               ),
             ),
           ),
-        ],
-        const SizedBox(width: 12),
-        // Compact next to a title this large. The label moved into the
-        // semantics rather than sitting beside a heading it would compete with.
         Semantics(
           button: true,
           label: '계획 추가',
           child: Material(
             key: const Key('plans-create-button'),
-            color: AppTheme.planSurface,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: const BorderSide(color: AppTheme.planBorder),
-            ),
+            color: Colors.transparent,
+            shape: const CircleBorder(),
             clipBehavior: Clip.antiAlias,
             child: InkWell(
               onTap: onCreatePlan,
               child: const SizedBox(
-                width: 48,
-                height: 48,
+                width: 44,
+                height: 44,
                 child: Icon(
                   Icons.add_rounded,
                   color: AppTheme.planInk,

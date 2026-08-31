@@ -237,6 +237,7 @@ final class PlanEditorScreen extends StatefulWidget {
   const PlanEditorScreen({
     this.sources = const [],
     this.initialDraft,
+    this.prefill,
     this.onSave,
     this.popOnSave = true,
     super.key,
@@ -244,6 +245,15 @@ final class PlanEditorScreen extends StatefulWidget {
 
   final List<PlanSourceOption> sources;
   final PlanDraft? initialDraft;
+
+  /// A new plan's answers, gathered somewhere else.
+  ///
+  /// Not an [initialDraft]: that is an existing plan being edited, and the
+  /// editor says so in its own header. This fills the same fields for a plan
+  /// that does not exist yet — whatever the reader already settled on before
+  /// arriving, with every remaining question still to answer here.
+  final PlanDraft? prefill;
+
   final ValueChanged<PlanDraft>? onSave;
   final bool popOnSave;
 
@@ -251,11 +261,15 @@ final class PlanEditorScreen extends StatefulWidget {
     BuildContext context, {
     List<PlanSourceOption> sources = const [],
     PlanDraft? initialDraft,
+    PlanDraft? prefill,
   }) {
     return Navigator.of(context).push<PlanDraft>(
       MaterialPageRoute<PlanDraft>(
-        builder: (_) =>
-            PlanEditorScreen(sources: sources, initialDraft: initialDraft),
+        builder: (_) => PlanEditorScreen(
+          sources: sources,
+          initialDraft: initialDraft,
+          prefill: prefill,
+        ),
       ),
     );
   }
@@ -341,7 +355,7 @@ final class _PlanEditorScreenState extends State<PlanEditorScreen> {
   @override
   void initState() {
     super.initState();
-    final initial = widget.initialDraft;
+    final initial = widget.initialDraft ?? widget.prefill;
     final defaultSchedule = DateTime.now().add(const Duration(hours: 1));
     _titleController = TextEditingController(text: initial?.title ?? '');
     _locationController = TextEditingController(

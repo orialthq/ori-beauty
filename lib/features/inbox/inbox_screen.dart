@@ -111,6 +111,7 @@ final class InboxScreen extends StatelessWidget {
                   children: [
                     for (var index = 0; index < captures.length; index++) ...[
                       _CaptureCard(
+                        key: Key('capture-card-${captures[index].raw.id}'),
                         capture: captures[index],
                         controller: controller,
                         onTap: () => _openCapture(context, captures[index]),
@@ -411,6 +412,7 @@ final class _CaptureCard extends StatelessWidget {
     required this.controller,
     required this.onTap,
     required this.onLongPress,
+    super.key,
   });
 
   final CaptureRecord capture;

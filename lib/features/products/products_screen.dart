@@ -4,13 +4,17 @@ import '../../core/app_theme.dart';
 import '../../domain/models.dart';
 import '../../state/app_controller.dart';
 import '../common/content_folder_ui.dart';
+import '../common/shell_menu_button.dart';
 import 'saved_library_item.dart';
 import 'subcategory_deck_screen.dart';
 
 final class ProductsScreen extends StatefulWidget {
-  const ProductsScreen({required this.controller, super.key});
+  const ProductsScreen({required this.controller, this.onOpenMenu, super.key});
 
   final AppController controller;
+
+  /// Opens the drawer. Every screen carries this now that the tab bar is gone.
+  final VoidCallback? onOpenMenu;
 
   @override
   State<ProductsScreen> createState() => _ProductsScreenState();
@@ -52,12 +56,16 @@ final class _ProductsScreenState extends State<ProductsScreen> {
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           padding: EdgeInsets.fromLTRB(
             20,
-            22,
+            8,
             20,
             40 + MediaQuery.viewPaddingOf(context).bottom,
           ),
           children: [
-            _ArchiveHeader(total: items.length),
+            ShellHeader(
+              onOpenMenu: widget.onOpenMenu,
+              title: '정리함',
+              actions: [_SavedCount(total: items.length)],
+            ),
             if (needsClassificationCount > 0) ...[
               const SizedBox(height: 14),
               _NeedsClassificationBanner(
@@ -89,57 +97,24 @@ final class _ProductsScreenState extends State<ProductsScreen> {
   }
 }
 
-final class _ArchiveHeader extends StatelessWidget {
-  const _ArchiveHeader({required this.total});
+/// How much is in here, beside the name rather than under it.
+final class _SavedCount extends StatelessWidget {
+  const _SavedCount({required this.total});
 
   final int total;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '정리함',
-                style: Theme.of(context).textTheme.displaySmall?.copyWith(
-                  fontSize: 42,
-                  letterSpacing: -1.8,
-                ),
-              ),
-            ],
-          ),
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: Text(
+        '$total 저장됨',
+        style: const TextStyle(
+          color: AppTheme.muted,
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
         ),
-        Padding(
-          padding: const EdgeInsets.only(bottom: 3),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                '$total',
-                style: const TextStyle(
-                  color: AppTheme.ink,
-                  fontSize: 27,
-                  height: 1,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-              const SizedBox(height: 3),
-              const Text(
-                '저장됨',
-                style: TextStyle(
-                  color: AppTheme.subtle,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
+      ),
     );
   }
 }
