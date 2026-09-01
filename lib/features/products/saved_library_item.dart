@@ -14,10 +14,12 @@ final class SavedLibraryItem {
   const SavedLibraryItem._({
     required this.id,
     required this.title,
+    required this.cardTitle,
     required this.subtitle,
     required this.searchableText,
     required this.tags,
     required this.updatedAt,
+    this.thumbnailPath,
     this.captureId,
     this.groupId,
   });
@@ -25,6 +27,7 @@ final class SavedLibraryItem {
   factory SavedLibraryItem.forCapture(CaptureRecord capture) {
     final structured = capture.analysis!.structuredContent!;
     final title = structured.title.value?.trim();
+    final place = structured.place?.name?.trim();
     final facts = structured.facts
         .map((fact) => '${fact.label} ${fact.value}')
         .join(' ');
@@ -32,6 +35,12 @@ final class SavedLibraryItem {
     return SavedLibraryItem._(
       id: capture.raw.id,
       title: title == null || title.isEmpty ? '제목 없음' : title,
+      // On a card the place's own name beats the caption it was posted under:
+      // 화육계 is what the reader is trying to find again, 을지로 골목 숯불
+      // 닭발집 is how somebody advertised it, and it does not fit anyway.
+      cardTitle: place != null && place.isNotEmpty
+          ? place
+          : (title == null || title.isEmpty ? '제목 없음' : title),
       subtitle: structured.summary.trim(),
       searchableText: <String>[
         for (final tag in tags) tag.value,
@@ -43,6 +52,11 @@ final class SavedLibraryItem {
       ].join(' ').toLowerCase(),
       tags: tags,
       updatedAt: capture.raw.receivedAt,
+      // The screenshot the reader took. It is the fastest way they will
+      // recognize this again, faster than the title we gave it.
+      thumbnailPath: capture.raw.attachments.isEmpty
+          ? null
+          : capture.raw.attachments.first.filePath,
       captureId: capture.raw.id,
     );
   }
@@ -60,6 +74,7 @@ final class SavedLibraryItem {
     return SavedLibraryItem._(
       id: group.id,
       title: group.identity.name,
+      cardTitle: group.identity.name,
       subtitle: <String>[
         group.identity.brand,
         group.identity.category,
@@ -81,6 +96,10 @@ final class SavedLibraryItem {
 
   final String id;
   final String title;
+
+  /// The shortest name that still identifies this. Used where the picture is
+  /// carrying most of the recognition and there is no room to spare.
+  final String cardTitle;
   final String subtitle;
   final String searchableText;
 
@@ -89,6 +108,11 @@ final class SavedLibraryItem {
   final List<ContentTag> tags;
 
   final DateTime updatedAt;
+
+  /// The original screenshot, when there is one. Legacy product groups predate
+  /// image capture and carry none, so the library draws them as type instead.
+  final String? thumbnailPath;
+
   final String? captureId;
   final String? groupId;
 

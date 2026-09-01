@@ -51,3 +51,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local-only seed for looking at 정리함 with real captures in it. Never commit.
+lib/data/visual_seed.dart

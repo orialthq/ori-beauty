@@ -131,8 +131,8 @@ final class ContentTag {
   /// backed by [evidenceIds] instead.
   final List<String> citations;
 
-  ContentTag copyWith({TagSource? source}) => ContentTag(
-    value: value,
+  ContentTag copyWith({String? value, TagSource? source}) => ContentTag(
+    value: value ?? this.value,
     source: source ?? this.source,
     confidence: confidence,
     evidenceIds: evidenceIds,

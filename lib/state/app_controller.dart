@@ -1153,6 +1153,47 @@ final class AppController extends ChangeNotifier {
     await _persistState();
   }
 
+  /// Renames a tag everywhere it is filed, merging when the name is taken.
+  ///
+  /// Renaming onto a name that already exists is a merge rather than an error.
+  /// `멕시코 음식` and `멕시코음식` are one word to the reader and two to the
+  /// analysis, and until an automatic pass can tell, the reader saying so is
+  /// the only thing that can join them.
+  ///
+  /// Every tag this touches becomes the reader's own. They have said what this
+  /// is called, and a later pass must not argue with it.
+  Future<void> renameTag(String from, String to) async {
+    final target = normalizeTagName(to);
+    if (target == from || !isValidTagName(target)) {
+      return;
+    }
+    var changed = false;
+    for (var index = 0; index < _captures.length; index++) {
+      final capture = _captures[index];
+      final tags = capture.contentTags;
+      if (!tags.any((tag) => tag.value == from)) {
+        continue;
+      }
+      _captures[index] = capture.copyWith(
+        // Deduping is what performs the merge: if the target name is already
+        // on this capture, the renamed one collapses into it.
+        tagOverride: dedupedTags([
+          for (final tag in tags)
+            if (tag.value == from)
+              tag.copyWith(value: target, source: TagSource.user)
+            else
+              tag,
+        ]),
+      );
+      changed = true;
+    }
+    if (!changed) {
+      return;
+    }
+    notifyListeners();
+    await _persistState();
+  }
+
   Future<bool> presentCapturePicker() {
     return _incomingShareService.presentCapturePicker();
   }

@@ -76,10 +76,10 @@ void main() {
     expect(find.text('A R C H I V E'), findsNothing);
     expect(find.byKey(const Key('library-search-field')), findsNothing);
 
-    // In through a tag rather than down through a folder.
+    // Tags are the instrument now, not the screen: they sit in a row above
+    // what the reader saved rather than standing in front of it.
     final tag = controller.tagCounts.first.tag.value;
-    await tester.tap(find.byKey(Key('tag-row-$tag')));
-    await tester.pumpAndSettle();
+    expect(find.byKey(Key('library-filter-$tag')), findsOneWidget);
 
     final recentItem = find.text('카밍 앰플').last;
     await tester.ensureVisible(recentItem);
@@ -138,7 +138,7 @@ void main() {
     expect(find.text('접기'), findsWidgets);
   });
 
-  testWidgets('filters the organized library by folder', (tester) async {
+  testWidgets('a tag narrows the library where it stands', (tester) async {
     final service = InMemoryIncomingShareService();
     final controller = AppController(service);
     addTearDown(controller.dispose);
@@ -149,19 +149,23 @@ void main() {
 
     await _openLibrary(tester);
 
-    // Every tag in the library, most used first. There is no folder to open
-    // and no child to find inside it.
     final tags = controller.tagCounts;
     expect(tags, isNotEmpty);
     final busiest = tags.first;
-    expect(find.byKey(Key('tag-row-${busiest.tag.value}')), findsOneWidget);
+    final chip = find.byKey(Key('library-filter-${busiest.tag.value}'));
+    expect(chip, findsOneWidget);
 
-    await tester.tap(find.byKey(Key('tag-row-${busiest.tag.value}')));
+    final total =
+        controller.organizedStructuredCaptures.length +
+        controller.groups.length;
+    expect(find.text('$total 저장됨'), findsOneWidget);
+
+    await tester.tap(chip);
     await tester.pumpAndSettle();
 
-    // The screen it opens is titled by the tag and lists what carries it.
-    expect(find.text(busiest.tag.value), findsWidgets);
-    expect(find.byType(ListView), findsWidgets);
+    // No page is pushed. The header counts what the tag kept, which is the
+    // whole feedback the reader gets that the tap did something.
+    expect(find.text('${busiest.count} / $total'), findsOneWidget);
   });
 
   testWidgets('the archive is a list of tags, not a tree of folders', (
