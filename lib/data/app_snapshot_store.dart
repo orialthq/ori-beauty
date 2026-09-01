@@ -317,8 +317,7 @@ final class PersistedCapture {
     required this.reviewedAt,
     required this.confirmedIdentity,
     required this.groupId,
-    this.folderOverride,
-    this.subcategoryOverride,
+    this.tagOverride,
     this.attachments = const [],
     this.analysis,
   });
@@ -343,8 +342,7 @@ final class PersistedCapture {
       reviewedAt: capture.review?.reviewedAt,
       confirmedIdentity: capture.review?.confirmedIdentity ?? group?.identity,
       groupId: capture.groupId,
-      folderOverride: capture.folderOverride,
-      subcategoryOverride: capture.subcategoryOverride,
+      tagOverride: capture.tagOverride,
       attachments: capture.raw.attachments,
       analysis: capture.analysis,
     );
@@ -406,16 +404,7 @@ final class PersistedCapture {
             )
           : null,
       groupId: json['groupId'] as String?,
-      folderOverride: json['folderOverride'] == null
-          ? null
-          : _enumByName(
-              ContentFolder.values,
-              json['folderOverride'],
-              ContentFolder.needsClassification,
-            ),
-      subcategoryOverride: json['subcategoryOverride'] is String
-          ? normalizeContentSubcategory(json['subcategoryOverride']! as String)
-          : null,
+      tagOverride: _tagOverrideFromJson(json),
       attachments: rawAttachments is List<Object?>
           ? rawAttachments
                 .whereType<Map<String, Object?>>()
@@ -443,8 +432,9 @@ final class PersistedCapture {
   final DateTime? reviewedAt;
   final ConfirmedProductIdentity? confirmedIdentity;
   final String? groupId;
-  final ContentFolder? folderOverride;
-  final String? subcategoryOverride;
+
+  /// The tags the reader settled on, when they have touched them.
+  final List<ContentTag>? tagOverride;
   final List<IncomingAttachment> attachments;
   final AnalysisRun? analysis;
 
@@ -488,8 +478,7 @@ final class PersistedCapture {
               'amount': identity.amount,
             },
       'groupId': groupId,
-      'folderOverride': folderOverride?.name,
-      'subcategoryOverride': subcategoryOverride,
+      'tagOverride': tagOverride?.map((tag) => tag.toJson()).toList(),
       'attachments': attachments.map((item) => item.toJson()).toList(),
       'analysis': analysis == null ? null : _AnalysisRunCodec.toJson(analysis!),
     };
@@ -511,3 +500,47 @@ final class PersistedCapture {
     return fallback;
   }
 }
+
+/// The reader's own tags, or the folder and subcategory they used to be.
+///
+/// A snapshot written before tags existed carries the two overrides a reader
+/// could set then. Both were the reader's decision, so both come back as tags
+/// they chose rather than as the analysis's suggestions.
+List<ContentTag>? _tagOverrideFromJson(Map<String, Object?> json) {
+  final stored = json['tagOverride'];
+  if (stored is List<Object?>) {
+    return dedupedTags([
+      for (final entry in stored)
+        if (entry is Map<String, Object?>) ContentTag.fromJson(entry, 'tag'),
+    ]);
+  }
+
+  final legacy = <ContentTag>[];
+  final folder = _legacyFolderTagName(json['folderOverride']);
+  if (folder != null) {
+    legacy.add(ContentTag(value: folder, source: TagSource.user));
+  }
+  final subcategory = json['subcategoryOverride'];
+  if (subcategory is String) {
+    final normalized = normalizeTagName(subcategory);
+    if (isValidTagName(normalized)) {
+      legacy.add(ContentTag(value: normalized, source: TagSource.user));
+    }
+  }
+  return legacy.isEmpty ? null : dedupedTags(legacy);
+}
+
+/// The Korean name of a folder a reader had moved a capture into. Its enum name
+/// is what the snapshot stored; 분류 필요 was the absence of a decision, so it
+/// becomes no tag at all.
+String? _legacyFolderTagName(Object? name) => switch (name) {
+  'beauty' => '뷰티',
+  'healthFitness' => '건강·운동',
+  'restaurantCafe' => '맛집·카페',
+  'recipe' => '레시피',
+  'shopping' => '쇼핑',
+  'travelPlace' => '여행·장소',
+  'lifeTip' => '생활·팁',
+  'other' => '기타',
+  _ => null,
+};

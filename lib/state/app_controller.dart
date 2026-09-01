@@ -150,23 +150,12 @@ final class AppController extends ChangeNotifier {
     final structured = capture.analysis?.structuredContent;
     CaptureRecord? organizedCapture;
     if (structured != null) {
-      organizedCapture = _applyStructuredOrganization(
-        captureId,
-        folder: capture.contentFolder,
-        subcategory: capture.contentSubcategory,
-      );
+      organizedCapture = _applyStructuredOrganization(captureId);
     } else {
       final identity = _quickOrganizationIdentity(capture.primaryMention)!;
-      final existingGroupIndex = _groups.indexWhere(
-        (group) => group.identity.identityKey == identity.identityKey,
-      );
-      final folder = existingGroupIndex == -1
-          ? capture.contentFolder
-          : folderForGroup(_groups[existingGroupIndex].id);
       organizedCapture = _applyProductOrganization(
         captureId: captureId,
         identity: identity,
-        folder: folder,
       );
     }
     if (organizedCapture == null) {
@@ -273,30 +262,55 @@ final class AppController extends ChangeNotifier {
         .toList(growable: false);
   }
 
-  ContentFolder folderForGroup(String groupId) {
-    for (final capture in _captures) {
-      if (capture.groupId == groupId) {
-        return capture.contentFolder;
-      }
-    }
-    return ContentFolder.beauty;
+  /// Everything the captures filed under this product are tagged with.
+  ///
+  /// A group has no tags of its own: it is the captures that carry them, and a
+  /// product filed from three screenshots is filed under all three sets.
+  List<ContentTag> tagsForGroup(String groupId) {
+    return dedupedTags([
+      for (final capture in _captures)
+        if (capture.groupId == groupId) ...capture.contentTags,
+    ]);
   }
 
-  String subcategoryForGroup(String groupId) {
-    for (final capture in _captures) {
-      if (capture.groupId == groupId) {
-        return capture.contentSubcategory;
+  /// Every tag in the library, most used first.
+  ///
+  /// Ties fall back to the name so the order does not shuffle between builds.
+  /// This is also the table a later pass will read to decide which near
+  /// duplicates are worth merging.
+  List<({ContentTag tag, int count})> get tagCounts {
+    final counts = <String, int>{};
+    final first = <String, ContentTag>{};
+    void add(Iterable<ContentTag> tags) {
+      for (final tag in tags) {
+        counts[tag.value] = (counts[tag.value] ?? 0) + 1;
+        first.putIfAbsent(tag.value, () => tag);
       }
     }
-    return '기타';
+
+    for (final capture in organizedStructuredCaptures) {
+      add(capture.contentTags);
+    }
+    for (final group in _groups) {
+      add(tagsForGroup(group.id));
+    }
+
+    final ordered = counts.keys.toList()
+      ..sort((a, b) {
+        final byCount = counts[b]!.compareTo(counts[a]!);
+        return byCount != 0 ? byCount : a.compareTo(b);
+      });
+    return List.unmodifiable([
+      for (final value in ordered) (tag: first[value]!, count: counts[value]!),
+    ]);
   }
 
-  int organizedCountForFolder(ContentFolder folder) {
+  int organizedCountForTag(String tag) {
     final structuredCount = organizedStructuredCaptures
-        .where((capture) => capture.contentFolder == folder)
+        .where((capture) => capture.hasTag(tag))
         .length;
     final groupCount = _groups
-        .where((group) => folderForGroup(group.id) == folder)
+        .where((group) => tagsForGroup(group.id).any((one) => one.value == tag))
         .length;
     return structuredCount + groupCount;
   }
@@ -584,11 +598,11 @@ final class AppController extends ChangeNotifier {
     unawaited(_enrichPlace(captureId));
   }
 
-  /// Fills the axes a screenshot cannot support, once the capture is already
-  /// saved and visible.
+  /// Adds the tags a screenshot cannot carry, once the capture is already saved
+  /// and visible.
   ///
   /// Deliberately not awaited by the analysis: the reader sees the screenshot's
-  /// own findings immediately, and web labels arrive on top a few seconds later.
+  /// own findings immediately, and web tags arrive on top a few seconds later.
   /// A capture with no place, or one already looked up, costs nothing.
   Future<void> _enrichPlace(String captureId) async {
     if (!_attemptedPlaceEnrichment.add(captureId)) {
@@ -643,9 +657,7 @@ final class AppController extends ChangeNotifier {
         model: run.model,
         startedAt: run.startedAt,
         attempt: run.attempt,
-        structuredContent: currentStructured.withAxes(
-          currentStructured.axes.mergedWith(found),
-        ),
+        structuredContent: currentStructured.withTags(found),
       ),
     );
     await _persistState();
@@ -774,8 +786,7 @@ final class AppController extends ChangeNotifier {
       analysis: capture.analysis,
       review: capture.review,
       groupId: capture.groupId,
-      folderOverride: capture.folderOverride,
-      subcategoryOverride: capture.subcategoryOverride,
+      tagOverride: capture.tagOverride,
     );
   }
 
@@ -909,14 +920,12 @@ final class AppController extends ChangeNotifier {
   Future<void> confirmAndOrganize({
     required String captureId,
     required ConfirmedProductIdentity identity,
-    ContentFolder folder = ContentFolder.beauty,
-    String? subcategory,
+    List<ContentTag>? tags,
   }) async {
     final capture = _applyProductOrganization(
       captureId: captureId,
       identity: identity,
-      folder: folder,
-      subcategory: subcategory,
+      tags: tags,
     );
     if (capture == null) {
       return;
@@ -932,8 +941,7 @@ final class AppController extends ChangeNotifier {
   CaptureRecord? _applyProductOrganization({
     required String captureId,
     required ConfirmedProductIdentity identity,
-    required ContentFolder folder,
-    String? subcategory,
+    List<ContentTag>? tags,
   }) {
     final captureIndex = _captures.indexWhere(
       (capture) => capture.raw.id == captureId,
@@ -1003,27 +1011,25 @@ final class AppController extends ChangeNotifier {
       );
     }
 
-    final effectiveSubcategory = normalizeContentSubcategory(
-      subcategory ??
-          (existingGroupIndex == -1
-              ? capture.contentSubcategory
-              : subcategoryForGroup(groupId)),
-    );
+    // Everything filed under one product shares one set of tags. Joining an
+    // existing group adopts what is already there; starting one hands the
+    // group whatever this capture carried.
+    final effectiveTags = dedupedTags([
+      ...?tags,
+      if (existingGroupIndex != -1) ...tagsForGroup(groupId),
+      ...capture.contentTags,
+    ]);
 
     _captures[captureIndex] = capture.copyWith(
       status: CaptureStatus.organized,
       review: review,
       groupId: groupId,
-      folderOverride: folder,
-      subcategoryOverride: effectiveSubcategory,
+      tagOverride: effectiveTags,
     );
     for (var index = 0; index < _captures.length; index++) {
       final groupedCapture = _captures[index];
       if (index != captureIndex && groupedCapture.groupId == groupId) {
-        _captures[index] = groupedCapture.copyWith(
-          folderOverride: folder,
-          subcategoryOverride: effectiveSubcategory,
-        );
+        _captures[index] = groupedCapture.copyWith(tagOverride: effectiveTags);
       }
     }
     return capture;
@@ -1063,14 +1069,9 @@ final class AppController extends ChangeNotifier {
 
   Future<void> confirmStructured(
     String captureId, {
-    ContentFolder? folder,
-    String? subcategory,
+    List<ContentTag>? tags,
   }) async {
-    final capture = _applyStructuredOrganization(
-      captureId,
-      folder: folder,
-      subcategory: subcategory,
-    );
+    final capture = _applyStructuredOrganization(captureId, tags: tags);
     if (capture == null) {
       return;
     }
@@ -1084,8 +1085,7 @@ final class AppController extends ChangeNotifier {
 
   CaptureRecord? _applyStructuredOrganization(
     String captureId, {
-    ContentFolder? folder,
-    String? subcategory,
+    List<ContentTag>? tags,
   }) {
     final captureIndex = _captures.indexWhere(
       (capture) => capture.raw.id == captureId,
@@ -1108,32 +1108,14 @@ final class AppController extends ChangeNotifier {
         resolution: ReviewResolution.confirmed,
         reviewedAt: DateTime.now(),
       ),
-      folderOverride: folder ?? capture.contentFolder,
-      subcategoryOverride: normalizeContentSubcategory(
-        subcategory ?? capture.contentSubcategory,
-      ),
+      tagOverride: tags == null ? capture.tagOverride : dedupedTags(tags),
     );
     return capture;
   }
 
-  Future<void> updateContentFolder(
+  Future<void> updateCaptureTags(
     String captureId,
-    ContentFolder folder,
-  ) async {
-    final index = _captures.indexWhere(
-      (capture) => capture.raw.id == captureId,
-    );
-    if (index == -1) {
-      return;
-    }
-    _captures[index] = _captures[index].copyWith(folderOverride: folder);
-    notifyListeners();
-    await _persistState();
-  }
-
-  Future<void> updateContentSubcategory(
-    String captureId,
-    String subcategory,
+    List<ContentTag> tags,
   ) async {
     final index = _captures.indexWhere(
       (capture) => capture.raw.id == captureId,
@@ -1142,23 +1124,26 @@ final class AppController extends ChangeNotifier {
       return;
     }
     _captures[index] = _captures[index].copyWith(
-      subcategoryOverride: normalizeContentSubcategory(subcategory),
+      tagOverride: dedupedTags(tags),
     );
     notifyListeners();
     await _persistState();
   }
 
-  Future<void> updateGroupContentFolder(
-    String groupId,
-    ContentFolder folder,
-  ) async {
+  /// Retags every capture filed under one product.
+  ///
+  /// All of them, because the tags are the group's: a product shown on the
+  /// library card carries one set, and leaving the others behind would make the
+  /// same product answer differently depending on which capture was read.
+  Future<void> updateGroupTags(String groupId, List<ContentTag> tags) async {
+    final resolved = dedupedTags(tags);
     var changed = false;
     for (var index = 0; index < _captures.length; index++) {
       final capture = _captures[index];
       if (capture.groupId != groupId) {
         continue;
       }
-      _captures[index] = capture.copyWith(folderOverride: folder);
+      _captures[index] = capture.copyWith(tagOverride: resolved);
       changed = true;
     }
     if (!changed) {
@@ -1168,30 +1153,6 @@ final class AppController extends ChangeNotifier {
     await _persistState();
   }
 
-  Future<void> updateGroupContentSubcategory(
-    String groupId,
-    String subcategory,
-  ) async {
-    final normalized = normalizeContentSubcategory(subcategory);
-    var changed = false;
-    for (var index = 0; index < _captures.length; index++) {
-      final capture = _captures[index];
-      if (capture.groupId != groupId) {
-        continue;
-      }
-      _captures[index] = capture.copyWith(subcategoryOverride: normalized);
-      changed = true;
-    }
-    if (!changed) {
-      return;
-    }
-    notifyListeners();
-    await _persistState();
-  }
-
-  /// Opens the platform picture picker. Accepted images arrive through the same
-  /// pending queue a share intent uses, so nothing is returned here beyond
-  /// whether the picker accepted anything.
   Future<bool> presentCapturePicker() {
     return _incomingShareService.presentCapturePicker();
   }
@@ -1228,8 +1189,7 @@ final class AppController extends ChangeNotifier {
             origin: capture.raw.origin,
           );
     final reanalyzed = reanalyzedWithoutFolder.copyWith(
-      folderOverride: capture.folderOverride,
-      subcategoryOverride: capture.subcategoryOverride,
+      tagOverride: capture.tagOverride,
     );
     _captures[index] = reanalyzed;
     unawaited(_persistState());
@@ -1269,8 +1229,7 @@ final class AppController extends ChangeNotifier {
           null => prepared,
         };
         final analyzed = analyzedWithoutFolder.copyWith(
-          folderOverride: persisted.folderOverride,
-          subcategoryOverride: persisted.subcategoryOverride,
+          tagOverride: persisted.tagOverride,
         );
         if (analyzed.status == CaptureStatus.analyzing) {
           pendingAnalysisIds.add(analyzed.raw.id);
@@ -1312,7 +1271,7 @@ final class AppController extends ChangeNotifier {
         restored.add(analyzed);
       }
       if (restored.isNotEmpty) {
-        _synchronizeRestoredGroupSubcategories(restored);
+        _synchronizeRestoredGroupTags(restored);
         _captures.insertAll(0, restored);
         _durablySavedTransportIds.addAll(
           restored.map((capture) => capture.raw.transportEventId),
@@ -1327,43 +1286,43 @@ final class AppController extends ChangeNotifier {
     }
   }
 
-  void _synchronizeRestoredGroupSubcategories(List<CaptureRecord> restored) {
-    final subcategoryByGroup = <String, String>{};
-    for (final capture in restored) {
-      final groupId = capture.groupId;
-      final override = capture.subcategoryOverride;
-      if (groupId != null && override != null) {
-        subcategoryByGroup.putIfAbsent(groupId, () => override);
+  /// Gives every capture in a group the tags one of them already carried.
+  ///
+  /// A snapshot stores each capture on its own, so a group whose tags were set
+  /// once can come back with only the capture that was open at the time
+  /// carrying them. The library card would then show a different set depending
+  /// on which capture it read first.
+  void _synchronizeRestoredGroupTags(List<CaptureRecord> restored) {
+    final tagsByGroup = <String, List<ContentTag>>{};
+    void collect(Iterable<CaptureRecord> captures) {
+      for (final capture in captures) {
+        final groupId = capture.groupId;
+        final override = capture.tagOverride;
+        if (groupId != null && override != null && override.isNotEmpty) {
+          tagsByGroup.putIfAbsent(groupId, () => override);
+        }
       }
     }
-    for (final capture in _captures) {
-      final groupId = capture.groupId;
-      final override = capture.subcategoryOverride;
-      if (groupId != null && override != null) {
-        subcategoryByGroup.putIfAbsent(groupId, () => override);
-      }
-    }
-    if (subcategoryByGroup.isEmpty) {
+
+    collect(restored);
+    collect(_captures);
+    if (tagsByGroup.isEmpty) {
       return;
     }
-    for (var index = 0; index < restored.length; index++) {
-      final capture = restored[index];
-      final subcategory = capture.groupId == null
-          ? null
-          : subcategoryByGroup[capture.groupId];
-      if (subcategory != null) {
-        restored[index] = capture.copyWith(subcategoryOverride: subcategory);
+    void apply(List<CaptureRecord> captures) {
+      for (var index = 0; index < captures.length; index++) {
+        final capture = captures[index];
+        final tags = capture.groupId == null
+            ? null
+            : tagsByGroup[capture.groupId];
+        if (tags != null) {
+          captures[index] = capture.copyWith(tagOverride: tags);
+        }
       }
     }
-    for (var index = 0; index < _captures.length; index++) {
-      final capture = _captures[index];
-      final subcategory = capture.groupId == null
-          ? null
-          : subcategoryByGroup[capture.groupId];
-      if (subcategory != null) {
-        _captures[index] = capture.copyWith(subcategoryOverride: subcategory);
-      }
-    }
+
+    apply(restored);
+    apply(_captures);
   }
 
   UserReview _restoredReview({

@@ -178,8 +178,7 @@ PortableTipPackage _tip(String id) {
     exportedAt: DateTime.utc(2026, 8, 5),
     title: '동묘집',
     summary: '철판쭈꾸미가 소개된 종로 맛집',
-    category: ContentFolder.restaurantCafe,
-    subcategory: '한식',
+    tags: const ['맛집·카페', '한식'],
     facts: [PortableTipFact(label: '대표 메뉴', value: '철판쭈꾸미')],
     place: PortableTipPlace(name: '동묘집', address: '서울 종로구 종로52길'),
     message: '이번 주말에 같이 갈래?',
@@ -192,7 +191,6 @@ PortableTipPackage _older(String id) {
     exportedAt: DateTime.utc(2026, 8, 1),
     title: '겨울 코트',
     summary: '아우터 후보',
-    category: ContentFolder.shopping,
-    subcategory: '아우터',
+    tags: const ['쇼핑', '아우터'],
   );
 }

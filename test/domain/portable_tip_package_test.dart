@@ -25,8 +25,7 @@ void main() {
       expect(decoded.packageId, 'tip-export-0001');
       expect(decoded.exportedAt, DateTime.utc(2026, 8, 5, 3));
       expect(decoded.title, '동묘집 철판쪽꾸미');
-      expect(decoded.category, ContentFolder.restaurantCafe);
-      expect(decoded.subcategory, '한식');
+      expect(decoded.tags, ['맛집·카페', '한식']);
       expect(decoded.sections.single.kind, PortableTipSectionKind.facts);
       expect(decoded.facts.single.label, '영업시간');
       expect(decoded.facts.single.value, '11:00~21:00');
@@ -50,8 +49,7 @@ void main() {
         exportedAt: DateTime.utc(2026, 8, 5),
         title: '쪽꾸미 요리',
         summary: '양념과 조리 순서',
-        category: ContentFolder.recipe,
-        subcategory: '해물 요리',
+        tags: const ['레시피', '해물 요리'],
         ingredientGroups: [
           PortableTipIngredientGroup(
             name: '양념',
@@ -105,11 +103,11 @@ void main() {
     });
 
     test('rejects an unknown schema version and invalid nested types', () {
-      final wrongVersion = _jsonObject(_basicPackage())..['schemaVersion'] = 2;
+      final wrongVersion = _jsonObject(_basicPackage())..['schemaVersion'] = 9;
       final wrongSummary = _jsonObject(_basicPackage());
       (wrongSummary['tip']! as Map<String, Object?>)['summary'] = 42;
-      final wrongSubcategory = _jsonObject(_basicPackage());
-      (wrongSubcategory['tip']! as Map<String, Object?>)['subcategory'] = true;
+      final wrongTags = _jsonObject(_basicPackage());
+      (wrongTags['tip']! as Map<String, Object?>)['tags'] = true;
 
       expect(
         () => PortableTipPackageCodec.decode(jsonEncode(wrongVersion)),
@@ -120,7 +118,7 @@ void main() {
         throwsFormatException,
       );
       expect(
-        () => PortableTipPackageCodec.decode(jsonEncode(wrongSubcategory)),
+        () => PortableTipPackageCodec.decode(jsonEncode(wrongTags)),
         throwsFormatException,
       );
     });
@@ -176,8 +174,7 @@ void main() {
           exportedAt: DateTime.utc(2026, 8, 5),
           title: '  주말\n  맛집\u0000  ',
           summary: '  방문   메뉴  ',
-          category: ContentFolder.restaurantCafe,
-          subcategory: '  한식  ',
+          tags: const ['맛집·카페', '  한식  '],
           notes: const ['  예약\n필수  ', '예약 필수'],
           source: PortableTipSource(
             label: ' Instagram ',
@@ -212,8 +209,7 @@ void main() {
           exportedAt: DateTime.utc(2026, 8, 5),
           title: List.filled(PortableTipLimits.maxTitleRunes + 1, '가').join(),
           summary: '',
-          category: ContentFolder.other,
-          subcategory: '기타',
+          tags: const ['기타'],
         ),
         throwsFormatException,
       );
@@ -230,8 +226,7 @@ void main() {
           exportedAt: DateTime.utc(2026, 8, 5),
           title: '제목',
           summary: '',
-          category: ContentFolder.other,
-          subcategory: '기타',
+          tags: const ['기타'],
           steps: [
             PortableTipStep(order: 1, instruction: '하나'),
             PortableTipStep(order: 1, instruction: '둘'),
@@ -245,8 +240,7 @@ void main() {
           exportedAt: DateTime.utc(2026, 8, 5),
           title: '제목',
           summary: '',
-          category: ContentFolder.other,
-          subcategory: '기타',
+          tags: const ['기타'],
           notes: List.generate(
             PortableTipLimits.maxNotes + 1,
             (index) => '메모 $index',
@@ -307,21 +301,17 @@ void main() {
       },
     );
 
-    test('maps an unclassified capture to the portable other category', () {
+    test('a capture with no tags is sent with none', () {
       final package = PortableTipPackage.create(
         packageId: 'capture-tip-0003',
         exportedAt: DateTime.utc(2026, 8, 5),
         title: '분류 전 팁',
         summary: '',
-        category: ContentFolder.needsClassification,
-        subcategory: '기타',
+        tags: const <String>[],
       );
 
-      expect(package.category, ContentFolder.other);
-      expect(
-        PortableTipPackageCodec.encode(package),
-        contains('"category":"other"'),
-      );
+      expect(package.tags, isEmpty);
+      expect(PortableTipPackageCodec.encode(package), contains('"tags":[]'));
     });
   });
 }
@@ -332,8 +322,7 @@ PortableTipPackage _basicPackage() {
     exportedAt: DateTime.utc(2026, 8, 5, 3),
     title: '동묘집 철판쪽꾸미',
     summary: '종로에서 철판쪽꾸미를 판는 한식당',
-    category: ContentFolder.restaurantCafe,
-    subcategory: '한식',
+    tags: const ['맛집·카페', '한식'],
     facts: [PortableTipFact(label: '영업시간', value: '11:00~21:00')],
     place: PortableTipPlace(name: '동묘집', address: '서울 종로구 종로52길 43-9'),
     source: PortableTipSource(
@@ -405,15 +394,14 @@ CaptureRecord _structuredCapture() {
     ),
   ];
   const structured = StructuredContentAnalysis(
-    schemaVersion: '1.2',
+    schemaVersion: '2.0',
     model: 'gpt-5.6-luna',
     domain: ContentDomain.food,
     contentKind: ContentKind.place,
-    primaryCategory: ContentFolder.restaurantCafe,
-    categoryConfidence: 0.95,
-    subcategory: '한식',
-    subcategoryConfidence: 0.9,
-    axes: ContentAxes.empty(),
+    tags: [
+      ContentTag(value: '맛집·카페'),
+      ContentTag(value: '한식'),
+    ],
     completeness: StructuredCompleteness.complete,
     title: StructuredTitle(
       value: '동묘집',

@@ -4,7 +4,6 @@ import '../../core/app_theme.dart';
 import '../../data/content_share_service.dart';
 import '../../domain/models.dart';
 import '../../domain/portable_tip_package.dart';
-import '../common/content_folder_ui.dart';
 
 final class ShareTipScreen extends StatefulWidget {
   const ShareTipScreen({required this.capture, super.key});
@@ -103,8 +102,7 @@ final class _ShareTipScreenState extends State<ShareTipScreen> {
                       child: _GiftTipCard(
                         title: title,
                         summary: _analysis.summary,
-                        folder: widget.capture.contentFolder,
-                        subcategory: widget.capture.contentSubcategory,
+                        tags: widget.capture.contentTags,
                         message: _messageController.text,
                         details: selectedDetails,
                       ),
@@ -591,16 +589,14 @@ final class _GiftTipCard extends StatelessWidget {
   const _GiftTipCard({
     required this.title,
     required this.summary,
-    required this.folder,
-    required this.subcategory,
+    required this.tags,
     required this.message,
     required this.details,
   });
 
   final String title;
   final String summary;
-  final ContentFolder folder;
-  final String subcategory;
+  final List<ContentTag> tags;
   final String message;
   final List<_SelectableTipDetail> details;
 
@@ -614,7 +610,7 @@ final class _GiftTipCard extends StatelessWidget {
       data: MediaQuery.of(context).copyWith(textScaler: TextScaler.noScaling),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: folder.color,
+          color: AppTheme.primary,
           borderRadius: BorderRadius.circular(cornerRadius),
         ),
         child: Stack(
@@ -622,7 +618,7 @@ final class _GiftTipCard extends StatelessWidget {
             Positioned.fill(
               child: ColoredBox(
                 key: const Key('share-card-export-background'),
-                color: folder.color,
+                color: AppTheme.primary,
               ),
             ),
             Positioned.fill(
@@ -733,7 +729,7 @@ final class _GiftTipCard extends StatelessWidget {
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(
-                          folder.label,
+                          tags.isEmpty ? '태그 없음' : tags.first.value,
                           style: const TextStyle(
                             color: dark,
                             fontSize: 11,
@@ -783,7 +779,9 @@ final class _GiftTipCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    summary.trim().isEmpty ? subcategory : summary,
+                    summary.trim().isEmpty && tags.isNotEmpty
+                        ? tags.first.value
+                        : summary,
                     maxLines: cleanMessage.isEmpty ? 3 : 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(

@@ -37,35 +37,6 @@ const labelValue = {
 };
 
 /// One axis of the saved library. A capture may carry several labels on the same
-/// axis, so a pasta place that also pours wine reaches the reader from either
-/// card. maxItems is a guard against runaway output, not a product limit.
-const axisLabels = {
-  type: "array",
-  maxItems: 8,
-  items: strictObject({ value: labelValue, confidence, evidenceIds }),
-};
-
-/// The kind axis lists what it saw before naming what it is.
-///
-/// Structured output is generated in schema order, so putting the observations
-/// first makes the model read the menu and then decide, instead of choosing a
-/// label and justifying it afterwards. It also shows the reader the basis, which
-/// is the only way to tell a menu-grounded label from one guessed off a shop name.
-const kindLabels = {
-  type: "array",
-  maxItems: 8,
-  items: strictObject({
-    observations: {
-      type: "array",
-      maxItems: 12,
-      items: { type: "string", minLength: 1, maxLength: 80 },
-    },
-    value: labelValue,
-    confidence,
-    evidenceIds,
-  }),
-};
-
 export const ANALYSIS_SCHEMA = {
   type: "object",
   properties: {
@@ -94,37 +65,29 @@ export const ANALYSIS_SCHEMA = {
         "unknown",
       ],
     },
-    primaryCategory: {
-      type: "string",
-      enum: [
-        "beauty",
-        "health_fitness",
-        "restaurant_cafe",
-        "recipe",
-        "shopping",
-        "travel_place",
-        "life_tip",
-        "other",
-      ],
+    // Flat and unbounded: a capture belongs under every word that fits it,
+    // and there is no folder above them to pick first. maxItems is a guard
+    // against runaway output, not a product limit.
+    //
+    // Observations come before the value because structured output is
+    // generated in schema order: listing what was read first makes the model
+    // decide from the screenshot instead of choosing a word and justifying it
+    // afterwards. It also shows the reader the basis, which is the only way to
+    // tell a menu-grounded tag from one guessed off a shop name.
+    tags: {
+      type: "array",
+      maxItems: 12,
+      items: strictObject({
+        observations: {
+          type: "array",
+          maxItems: 12,
+          items: { type: "string", minLength: 1, maxLength: 80 },
+        },
+        value: labelValue,
+        confidence,
+        evidenceIds,
+      }),
     },
-    categoryConfidence: confidence,
-    subcategory: {
-      type: "string",
-      minLength: 2,
-      maxLength: 20,
-      pattern:
-        "^[가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+(?:[ ·ㆍ&/+＋~-][가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+)*$",
-    },
-    subcategoryConfidence: confidence,
-    // savedReason is absent on purpose: why a person kept something lives in
-    // their head, so the model has nothing to read and the user fills it later.
-    // A screenshot shows what a place is and roughly where. Whether it takes
-    // bookings, or seats a group, is almost never on the picture — those axes
-    // are filled by the web pass instead of guessed from a caption.
-    axes: strictObject({
-      kind: kindLabels,
-      location: axisLabels,
-    }),
     completeness: {
       type: "string",
       enum: [
@@ -248,11 +211,7 @@ export const ANALYSIS_SCHEMA = {
     "model",
     "domain",
     "contentKind",
-    "primaryCategory",
-    "categoryConfidence",
-    "subcategory",
-    "subcategoryConfidence",
-    "axes",
+    "tags",
     "completeness",
     "title",
     "place",

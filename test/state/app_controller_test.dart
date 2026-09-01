@@ -88,8 +88,10 @@ void main() {
           category: '세럼',
           amount: '30mL',
         ),
-        folder: ContentFolder.shopping,
-        subcategory: '스킨케어',
+        tags: const [
+          ContentTag(value: '쇼핑', source: TagSource.user),
+          ContentTag(value: '스킨케어', source: TagSource.user),
+        ],
       );
 
       expect(
@@ -100,18 +102,11 @@ void main() {
         controller.groupById('group-baumlab-pore-balance')?.sourceCount,
         before + 1,
       );
+      // Everything filed under one product shares one set of tags.
       expect(
         controller
             .capturesForGroup('group-baumlab-pore-balance')
-            .every(
-              (capture) => capture.contentFolder == ContentFolder.shopping,
-            ),
-        isTrue,
-      );
-      expect(
-        controller
-            .capturesForGroup('group-baumlab-pore-balance')
-            .every((capture) => capture.contentSubcategory == '스킨케어'),
+            .every((capture) => capture.hasTag('쇼핑') && capture.hasTag('스킨케어')),
         isTrue,
       );
     },
@@ -195,14 +190,16 @@ void main() {
         category: '선케어',
         amount: '50mL',
       ),
-      folder: ContentFolder.shopping,
-      subcategory: '스킨케어',
+      tags: const [
+        ContentTag(value: '쇼핑', source: TagSource.user),
+        ContentTag(value: '스킨케어', source: TagSource.user),
+      ],
     );
     final firstCapture = firstController.captureById(captureId)!;
-    await firstController.updateGroupContentSubcategory(
-      firstCapture.groupId!,
-      '  선케어  ',
-    );
+    await firstController.updateGroupTags(firstCapture.groupId!, const [
+      ContentTag(value: '쇼핑', source: TagSource.user),
+      ContentTag(value: '선케어', source: TagSource.user),
+    ]);
     firstController.dispose();
 
     final secondService = InMemoryIncomingShareService();
@@ -217,23 +214,27 @@ void main() {
     final restored = secondController.captureById(captureId);
     expect(restored?.status, CaptureStatus.organized);
     expect(restored?.review?.confirmedIdentity?.brand, '오로라랩');
-    expect(restored?.contentFolder, ContentFolder.shopping);
-    expect(restored?.contentSubcategory, '선케어');
-    expect(secondController.subcategoryForGroup(restored!.groupId!), '선케어');
+    expect(restored?.contentTags.map((tag) => tag.value), ['쇼핑', '선케어']);
+    expect(
+      secondController.tagsForGroup(restored!.groupId!).map((t) => t.value),
+      ['쇼핑', '선케어'],
+    );
     expect(secondController.groupById(restored.groupId!)?.sourceCount, 1);
   });
 
-  test('keeps a user subcategory when analysis is retried', () async {
+  test("keeps the reader's own tags when analysis is retried", () async {
     final captureId = controller.addManualInput(
       '바움랩 포어 밸런스 세럼 30ml. 촉촉하다고 소개했어요.',
     );
-    await controller.updateContentSubcategory(captureId, '  집중 보습✨  ');
+    await controller.updateCaptureTags(captureId, const [
+      ContentTag(value: '집중 보습', source: TagSource.user),
+    ]);
 
     controller.retryAnalysis(captureId);
 
     final retried = controller.captureById(captureId)!;
-    expect(retried.subcategoryOverride, '집중 보습');
-    expect(retried.contentSubcategory, '집중 보습');
+    expect(retried.tagOverride?.single.value, '집중 보습');
+    expect(retried.contentTags.single.source, TagSource.user);
   });
 
   test(
@@ -249,7 +250,9 @@ void main() {
       final captureId = firstController.addManualInput(
         '데이라이트 에어리 선 플루이드 50ml. 가볍게 발려요.',
       );
-      await firstController.updateContentSubcategory(captureId, '선케어');
+      await firstController.updateCaptureTags(captureId, const [
+        ContentTag(value: '선케어', source: TagSource.user),
+      ]);
 
       expect(await firstController.deleteCapture(captureId), isTrue);
       expect(firstController.captureById(captureId), isNull);
@@ -352,8 +355,7 @@ void main() {
 
       final organized = structuredController.captureById(captureId)!;
       expect(organized.status, CaptureStatus.organized);
-      expect(organized.contentFolder, ContentFolder.recipe);
-      expect(organized.contentSubcategory, '밑반찬');
+      expect(organized.contentTags.map((tag) => tag.value), ['밑반찬']);
       expect(
         structuredController.organizedStructuredCaptures.map(
           (capture) => capture.raw.id,
@@ -715,15 +717,11 @@ final class _StructuredAnalysisService implements ContentAnalysisService {
 
   static const _baseline = BaselineContentAnalysisService();
   static const _structured = StructuredContentAnalysis(
-    schemaVersion: '1.2',
+    schemaVersion: '2.0',
     model: 'gpt-5.6-luna',
     domain: ContentDomain.food,
     contentKind: ContentKind.recipe,
-    primaryCategory: ContentFolder.recipe,
-    categoryConfidence: 0.96,
-    subcategory: '밑반찬',
-    subcategoryConfidence: 0.93,
-    axes: ContentAxes.empty(),
+    tags: [ContentTag(value: '밑반찬')],
     completeness: StructuredCompleteness.complete,
     title: StructuredTitle(
       value: '두부조림',

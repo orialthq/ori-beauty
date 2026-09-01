@@ -25,25 +25,21 @@ enum ShareKind { text, image }
 
 enum ContentDomain { beauty, food, unknown }
 
-enum ContentFolder {
-  beauty,
-  healthFitness,
-  restaurantCafe,
-  recipe,
-  shopping,
-  travelPlace,
-  lifeTip,
-  other,
-  needsClassification,
-}
+/// Where a tag came from, so a suggestion is never mistaken for a decision, and
+/// a web finding is never mistaken for something the screenshot showed.
+///
+/// The one field a later pass has to have: an AI tag can be rewritten when the
+/// library learns that two names mean the same thing, and a tag the reader
+/// typed never can.
+enum TagSource { ai, user, web }
 
 // `~` is allowed so a price band reads as 2~5만원 rather than 25만원.
-final _contentSubcategoryPattern = RegExp(
+final _tagNamePattern = RegExp(
   r'^[가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+(?:[ ·ㆍ&/+~\-][가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+)*$',
 );
 
-/// Keeps AI and user-created subcategory names concise and safe to display.
-String normalizeContentSubcategory(String value) {
+/// Keeps AI and user-written tag names concise and safe to display.
+String normalizeTagName(String value) {
   final collapsed = value.trim().replaceAll(RegExp(r'\s+'), ' ');
   final sanitized = collapsed
       .replaceAll(RegExp(r'[^0-9A-Za-z가-힣ㄱ-ㅎㅏ-ㅣ·ㆍ&/+~\- ]'), '')
@@ -56,12 +52,114 @@ String normalizeContentSubcategory(String value) {
   return concise.runes.length < 2 ? '기타' : concise;
 }
 
-bool isValidContentSubcategory(String value) {
+bool isValidTagName(String value) {
   final length = value.runes.length;
   return length >= 2 &&
       length <= 20 &&
-      value == normalizeContentSubcategory(value) &&
-      _contentSubcategoryPattern.hasMatch(value);
+      value == normalizeTagName(value) &&
+      _tagNamePattern.hasMatch(value);
+}
+
+/// One word a capture is filed under.
+///
+/// Flat: there is no tag above or below another. A 을지로 국밥 capture carries
+/// 맛집·카페, 국밥, 을지로 and 웨이팅 side by side, where the folder it used to
+/// live in made it pick one of them and drop the rest.
+///
+/// Two tags are the same tag when their names match exactly. Deciding that
+/// `스킨케어` and `스킨 케어` are one thing needs a corpus to measure, which the
+/// library does not have yet; until then a near-duplicate is left standing
+/// where it can be counted.
+final class ContentTag {
+  const ContentTag({
+    required this.value,
+    this.source = TagSource.ai,
+    this.confidence = 1,
+    this.evidenceIds = const [],
+    this.quotes = const [],
+    this.citations = const [],
+  });
+
+  factory ContentTag.fromJson(Map<String, Object?> json, String field) {
+    _requireExactKeys(
+      json,
+      const {'value'},
+      field,
+      optional: const {
+        'source',
+        'confidence',
+        'evidenceIds',
+        'quotes',
+        'citations',
+      },
+    );
+    final value = _requiredString(json['value'], '$field.value');
+    if (!isValidTagName(value)) {
+      throw FormatException('Structured $field.value is not a reusable tag.');
+    }
+    return ContentTag(
+      value: value,
+      source: switch (json['source']) {
+        'user' => TagSource.user,
+        'web' => TagSource.web,
+        _ => TagSource.ai,
+      },
+      confidence: json['confidence'] == null
+          ? 1
+          : _confidence(json['confidence'], '$field.confidence'),
+      evidenceIds: _optionalStringList(
+        json['evidenceIds'],
+        '$field.evidenceIds',
+      ),
+      quotes: _optionalStringList(json['quotes'], '$field.quotes'),
+      citations: _optionalStringList(json['citations'], '$field.citations'),
+    );
+  }
+
+  final String value;
+  final TagSource source;
+  final double confidence;
+
+  /// Which pieces of the screenshot this was read from.
+  final List<String> evidenceIds;
+
+  /// The text this tag was read from — menu lines on the screenshot, or the
+  /// sentence a web page stated.
+  final List<String> quotes;
+
+  /// Pages a web tag came from. Empty for one read off the screen, which is
+  /// backed by [evidenceIds] instead.
+  final List<String> citations;
+
+  ContentTag copyWith({TagSource? source}) => ContentTag(
+    value: value,
+    source: source ?? this.source,
+    confidence: confidence,
+    evidenceIds: evidenceIds,
+    quotes: quotes,
+    citations: citations,
+  );
+
+  Map<String, Object?> toJson() => {
+    'value': value,
+    'source': source.name,
+    'confidence': confidence,
+    'evidenceIds': evidenceIds,
+    'quotes': quotes,
+    'citations': citations,
+  };
+}
+
+/// [tags] with duplicates dropped, keeping the first of each name.
+///
+/// First wins because what the screenshot showed comes before what a later pass
+/// added, and because a reader's own tag is placed ahead of the rest.
+List<ContentTag> dedupedTags(Iterable<ContentTag> tags) {
+  final seen = <String>{};
+  return List<ContentTag>.unmodifiable([
+    for (final tag in tags)
+      if (seen.add(tag.value)) tag,
+  ]);
 }
 
 enum ContentKind {
@@ -815,163 +913,13 @@ final class StructuredPlace {
   };
 }
 
-/// The five fixed axes a saved capture is filed under.
-///
-/// Fixed because the library's filter row is fixed; a new axis is a product
-/// decision, not something an analysis may invent.
-enum ContentAxis {
-  kind('종류'),
-  location('위치'),
-  access('예약·대기'),
-  savedReason('저장이유');
-
-  const ContentAxis(this.label);
-
-  final String label;
-
-  static ContentAxis? fromKey(Object? key) {
-    for (final axis in values) {
-      if (axis.name == key) return axis;
-    }
-    return null;
-  }
-}
-
-/// Where a label came from, so a suggestion is never mistaken for a decision,
-/// and a web finding is never mistaken for something the screenshot showed.
-enum AxisLabelSource { screen, user, web }
-
-final class AxisLabel {
-  const AxisLabel({
-    required this.value,
-    required this.confidence,
-    required this.evidenceIds,
-    this.source = AxisLabelSource.screen,
-    this.quotes = const [],
-    this.citations = const [],
-  });
-
-  factory AxisLabel.fromJson(Map<String, Object?> json, String field) {
-    _requireExactKeys(
-      json,
-      const {'value', 'confidence', 'evidenceIds'},
-      field,
-      optional: const {'source', 'quotes', 'citations'},
-    );
-    final value = _requiredString(json['value'], '$field.value');
-    if (!isValidContentSubcategory(value)) {
-      throw FormatException('Structured $field.value is not a reusable label.');
-    }
-    return AxisLabel(
-      value: value,
-      confidence: _confidence(json['confidence'], '$field.confidence'),
-      evidenceIds: _strictStringList(json['evidenceIds'], '$field.evidenceIds'),
-      source: switch (json['source']) {
-        'user' => AxisLabelSource.user,
-        'web' => AxisLabelSource.web,
-        _ => AxisLabelSource.screen,
-      },
-      quotes: _optionalStringList(json['quotes'], '$field.quotes'),
-      citations: _optionalStringList(json['citations'], '$field.citations'),
-    );
-  }
-
-  final String value;
-  final double confidence;
-  final List<String> evidenceIds;
-  final AxisLabelSource source;
-
-  /// The text this label was read from — menu lines on the screenshot, or the
-  /// sentence a web page stated. A label with nothing to quote is a guess, so
-  /// the server drops those before they arrive.
-  final List<String> quotes;
-
-  /// Pages a web label came from. Empty for a screen label, which is backed by
-  /// [evidenceIds] instead.
-  final List<String> citations;
-
-  Map<String, Object?> toJson() => {
-    'value': value,
-    'confidence': confidence,
-    'evidenceIds': evidenceIds,
-    'source': source.name,
-    'quotes': quotes,
-    'citations': citations,
-  };
-}
-
-final class ContentAxes {
-  const ContentAxes({required this.labels});
-
-  const ContentAxes.empty() : labels = const {};
-
-  factory ContentAxes.fromJson(Map<String, Object?> json) {
-    _requireExactKeys(json, const {
-      'kind',
-      'location',
-      'access',
-      'savedReason',
-    }, 'axes');
-    final labels = <ContentAxis, List<AxisLabel>>{};
-    for (final axis in ContentAxis.values) {
-      final raw = _strictMapList(json[axis.name], 'axes.${axis.name}');
-      final seen = <String>{};
-      final parsed = <AxisLabel>[];
-      for (var index = 0; index < raw.length; index++) {
-        final label = AxisLabel.fromJson(
-          raw[index],
-          'axes.${axis.name}[$index]',
-        );
-        // A repeated label would show the same capture twice on one card.
-        if (!seen.add(label.value)) continue;
-        parsed.add(label);
-      }
-      labels[axis] = List.unmodifiable(parsed);
-    }
-    return ContentAxes(labels: Map.unmodifiable(labels));
-  }
-
-  final Map<ContentAxis, List<AxisLabel>> labels;
-
-  List<AxisLabel> operator [](ContentAxis axis) => labels[axis] ?? const [];
-
-  bool get isEmpty => ContentAxis.values.every((axis) => this[axis].isEmpty);
-
-  /// Adds labels found elsewhere without displacing what the screenshot showed.
-  ///
-  /// Screen labels keep their position at the front of each axis, and an
-  /// incoming label whose value is already present is dropped: the same shop
-  /// must never appear twice on one card just because two sources agreed.
-  ContentAxes mergedWith(ContentAxes other) {
-    return ContentAxes(
-      labels: Map.unmodifiable({
-        for (final axis in ContentAxis.values)
-          axis: List<AxisLabel>.unmodifiable([
-            ...this[axis],
-            for (final label in other[axis])
-              if (!this[axis].any((kept) => kept.value == label.value)) label,
-          ]),
-      }),
-    );
-  }
-
-  Map<String, Object?> toJson() => {
-    for (final axis in ContentAxis.values)
-      axis.name: this[axis].map((label) => label.toJson()).toList(),
-  };
-}
-
 final class StructuredContentAnalysis {
   const StructuredContentAnalysis({
     required this.schemaVersion,
     required this.model,
     required this.domain,
     required this.contentKind,
-    required this.primaryCategory,
-    required this.categoryConfidence,
-    required this.subcategory,
-    required this.subcategoryConfidence,
-    required this.axes,
+    required this.tags,
     required this.completeness,
     required this.title,
     required this.place,
@@ -988,44 +936,58 @@ final class StructuredContentAnalysis {
     final normalizedJson = Map<String, Object?>.of(json);
     final declaredVersion = normalizedJson['schemaVersion'];
     normalizedJson.putIfAbsent('place', () => null);
-    if (declaredVersion == '1.0') {
-      normalizedJson.putIfAbsent(
-        'primaryCategory',
-        () => _legacyPrimaryCategory(normalizedJson),
-      );
-      normalizedJson.putIfAbsent(
-        'categoryConfidence',
-        () => _legacyCategoryConfidence(normalizedJson),
-      );
-    }
-    if (declaredVersion == '1.0' || declaredVersion == '1.1') {
-      normalizedJson.putIfAbsent(
-        'subcategory',
-        () => _legacySubcategory(normalizedJson),
-      );
-      normalizedJson.putIfAbsent(
-        'subcategoryConfidence',
-        () => _legacySubcategoryConfidence(normalizedJson),
-      );
-    }
-    if (declaredVersion == '1.0' ||
-        declaredVersion == '1.1' ||
-        declaredVersion == '1.2') {
-      normalizedJson.putIfAbsent('axes', () => _legacyAxes(normalizedJson));
-    }
-    if (declaredVersion != '1.5') {
+    // Everything a capture used to be filed under — one folder, one
+    // subcategory, four axes of labels — is one flat list of tags now. A
+    // snapshot written before that is walked up through the versions it missed
+    // and then flattened, so a reader's library survives the change without
+    // being analysed again.
+    //
+    // Only when `tags` is missing: an old snapshot re-saved after this carries
+    // the version it was analysed at and the tags it was flattened into.
+    if (!normalizedJson.containsKey('tags')) {
+      if (declaredVersion == '1.0') {
+        normalizedJson.putIfAbsent(
+          'primaryCategory',
+          () => _legacyPrimaryCategory(normalizedJson),
+        );
+        normalizedJson.putIfAbsent(
+          'categoryConfidence',
+          () => _legacyCategoryConfidence(normalizedJson),
+        );
+      }
+      if (declaredVersion == '1.0' || declaredVersion == '1.1') {
+        normalizedJson.putIfAbsent(
+          'subcategory',
+          () => _legacySubcategory(normalizedJson),
+        );
+        normalizedJson.putIfAbsent(
+          'subcategoryConfidence',
+          () => _legacySubcategoryConfidence(normalizedJson),
+        );
+      }
+      if (declaredVersion == '1.0' ||
+          declaredVersion == '1.1' ||
+          declaredVersion == '1.2') {
+        normalizedJson.putIfAbsent('axes', () => _legacyAxes(normalizedJson));
+      }
       normalizedJson['axes'] = _migratedAxes(normalizedJson['axes']);
+      normalizedJson['tags'] = _tagsFromFiledFields(normalizedJson);
+      for (final retired in const [
+        'primaryCategory',
+        'categoryConfidence',
+        'subcategory',
+        'subcategoryConfidence',
+        'axes',
+      ]) {
+        normalizedJson.remove(retired);
+      }
     }
     _requireExactKeys(normalizedJson, const {
       'schemaVersion',
       'model',
       'domain',
       'contentKind',
-      'primaryCategory',
-      'categoryConfidence',
-      'subcategory',
-      'subcategoryConfidence',
-      'axes',
+      'tags',
       'completeness',
       'title',
       'place',
@@ -1049,6 +1011,7 @@ final class StructuredContentAnalysis {
           '1.3',
           '1.4',
           '1.5',
+          '2.0',
         }.contains(schemaVersion) ||
         !const {'gpt-5.6-luna', 'portable-tip-v1'}.contains(model)) {
       throw const FormatException(
@@ -1060,20 +1023,17 @@ final class StructuredContentAnalysis {
       model: model,
       domain: _contentDomain(normalizedJson['domain']),
       contentKind: _contentKind(normalizedJson['contentKind']),
-      primaryCategory: _contentFolder(normalizedJson['primaryCategory']),
-      categoryConfidence: _confidence(
-        normalizedJson['categoryConfidence'],
-        'analysis.categoryConfidence',
-      ),
-      subcategory: _parsedContentSubcategory(
-        normalizedJson['subcategory'],
-        schemaVersion: schemaVersion,
-      ),
-      subcategoryConfidence: _confidence(
-        normalizedJson['subcategoryConfidence'],
-        'analysis.subcategoryConfidence',
-      ),
-      axes: ContentAxes.fromJson(_requiredMap(normalizedJson['axes'], 'axes')),
+      tags: dedupedTags([
+        for (
+          var index = 0;
+          index < _strictMapList(normalizedJson['tags'], 'tags').length;
+          index++
+        )
+          ContentTag.fromJson(
+            _strictMapList(normalizedJson['tags'], 'tags')[index],
+            'tags[$index]',
+          ),
+      ]),
       completeness: _structuredCompleteness(normalizedJson['completeness']),
       title: StructuredTitle.fromJson(
         _requiredMap(normalizedJson['title'], 'title'),
@@ -1113,19 +1073,19 @@ final class StructuredContentAnalysis {
     return result;
   }
 
-  /// A copy carrying merged axes, used when a later pass finds labels the
-  /// screenshot could not support.
-  StructuredContentAnalysis withAxes(ContentAxes value) =>
+  /// A copy carrying tags a later pass found, added behind the ones already
+  /// here rather than displacing them.
+  ///
+  /// What the screenshot showed keeps its place at the front, and an incoming
+  /// tag whose name is already present is dropped: the same word must never
+  /// appear twice on one capture just because two sources agreed.
+  StructuredContentAnalysis withTags(List<ContentTag> found) =>
       StructuredContentAnalysis(
         schemaVersion: schemaVersion,
         model: model,
         domain: domain,
         contentKind: contentKind,
-        primaryCategory: primaryCategory,
-        categoryConfidence: categoryConfidence,
-        subcategory: subcategory,
-        subcategoryConfidence: subcategoryConfidence,
-        axes: value,
+        tags: dedupedTags([...tags, ...found]),
         completeness: completeness,
         title: title,
         place: place,
@@ -1142,14 +1102,10 @@ final class StructuredContentAnalysis {
   final String model;
   final ContentDomain domain;
   final ContentKind contentKind;
-  final ContentFolder primaryCategory;
-  final double categoryConfidence;
-  final String subcategory;
-  final double subcategoryConfidence;
 
-  /// The five saved-library axes. A capture may sit on several labels of the
-  /// same axis, so the cards it appears under deliberately overlap.
-  final ContentAxes axes;
+  /// Every word this capture is filed under, flat and in the order the
+  /// analysis gave them.
+  final List<ContentTag> tags;
   final StructuredCompleteness completeness;
   final StructuredTitle title;
   final StructuredPlace? place;
@@ -1164,8 +1120,6 @@ final class StructuredContentAnalysis {
   bool get isRecipe =>
       contentKind == ContentKind.recipe ||
       contentKind == ContentKind.sauceRecipe;
-
-  bool get categoryNeedsReview => categoryConfidence < 0.72;
 
   void _validateEvidenceReferences() {
     final ids = evidence.map((item) => item.id).toList(growable: false);
@@ -1204,11 +1158,7 @@ final class StructuredContentAnalysis {
       ContentKind.place => 'place',
       _ => contentKind.name,
     },
-    'primaryCategory': _contentFolderWireName(primaryCategory),
-    'categoryConfidence': categoryConfidence,
-    'subcategory': subcategory,
-    'subcategoryConfidence': subcategoryConfidence,
-    'axes': axes.toJson(),
+    'tags': tags.map((tag) => tag.toJson()).toList(),
     'completeness': switch (completeness) {
       StructuredCompleteness.needsReview => 'needs_review',
       _ => completeness.name,
@@ -1266,18 +1216,6 @@ String _requiredString(Object? value, String field) {
     throw FormatException('Structured $field is invalid.');
   }
   return value;
-}
-
-String _parsedContentSubcategory(
-  Object? value, {
-  required String schemaVersion,
-}) {
-  final raw = _requiredString(value, 'analysis.subcategory');
-  final normalized = normalizeContentSubcategory(raw);
-  if (schemaVersion == '1.2' && !isValidContentSubcategory(raw)) {
-    throw const FormatException('Structured analysis.subcategory is invalid.');
-  }
-  return normalized;
 }
 
 String _stringAllowEmpty(Object? value, String field) {
@@ -1352,35 +1290,72 @@ ContentKind _contentKind(Object? value) {
   };
 }
 
-ContentFolder _contentFolder(Object? value) {
-  return switch (value) {
-    'beauty' => ContentFolder.beauty,
-    'health_fitness' => ContentFolder.healthFitness,
-    'restaurant_cafe' => ContentFolder.restaurantCafe,
-    'recipe' => ContentFolder.recipe,
-    'shopping' => ContentFolder.shopping,
-    'travel_place' => ContentFolder.travelPlace,
-    'life_tip' => ContentFolder.lifeTip,
-    'other' => ContentFolder.other,
-    _ => throw const FormatException(
-      'Structured analysis.primaryCategory is invalid.',
-    ),
-  };
+/// The tags an older analysis was already carrying, under other names.
+///
+/// The folder it sat in, the subcategory it was given, and every axis label
+/// were each a word the capture is filed under. Flattening them loses nothing
+/// but the shelf they stood on.
+List<Map<String, Object?>> _tagsFromFiledFields(Map<String, Object?> json) {
+  final tags = <Map<String, Object?>>[];
+
+  // A folder the analysis was not sure of is left out. It used to put the
+  // capture in 분류 필요 rather than name it, and a capture with no tags is how
+  // that reads now.
+  final folderConfidence = json['categoryConfidence'];
+  final folder = _folderTagName(json['primaryCategory']);
+  if (folder != null && folderConfidence is num && folderConfidence >= 0.72) {
+    tags.add({
+      'value': folder,
+      'source': 'ai',
+      'confidence': folderConfidence.toDouble(),
+    });
+  }
+
+  final subcategory = json['subcategory'];
+  if (subcategory is String && isValidTagName(subcategory)) {
+    final confidence = json['subcategoryConfidence'];
+    tags.add({
+      'value': subcategory,
+      'source': 'ai',
+      if (confidence is num) 'confidence': confidence.toDouble(),
+    });
+  }
+
+  final axes = json['axes'];
+  if (axes is Map<String, Object?>) {
+    for (final labels in axes.values) {
+      if (labels is! List<Object?>) continue;
+      for (final label in labels) {
+        if (label is! Map<String, Object?>) continue;
+        final value = label['value'];
+        if (value is! String || !isValidTagName(value)) continue;
+        tags.add({
+          'value': value,
+          'source': label['source'] is String ? label['source'] : 'ai',
+          if (label['confidence'] != null) 'confidence': label['confidence'],
+          if (label['evidenceIds'] != null) 'evidenceIds': label['evidenceIds'],
+          if (label['quotes'] != null) 'quotes': label['quotes'],
+          if (label['citations'] != null) 'citations': label['citations'],
+        });
+      }
+    }
+  }
+  return tags;
 }
 
-String _contentFolderWireName(ContentFolder value) {
-  return switch (value) {
-    ContentFolder.beauty => 'beauty',
-    ContentFolder.healthFitness => 'health_fitness',
-    ContentFolder.restaurantCafe => 'restaurant_cafe',
-    ContentFolder.recipe => 'recipe',
-    ContentFolder.shopping => 'shopping',
-    ContentFolder.travelPlace => 'travel_place',
-    ContentFolder.lifeTip => 'life_tip',
-    ContentFolder.other => 'other',
-    ContentFolder.needsClassification => 'other',
-  };
-}
+/// The Korean name of a folder, which is what a reader always saw. The wire
+/// names are what the snapshots stored.
+String? _folderTagName(Object? wireName) => switch (wireName) {
+  'beauty' => '뷰티',
+  'health_fitness' => '건강·운동',
+  'restaurant_cafe' => '맛집·카페',
+  'recipe' => '레시피',
+  'shopping' => '쇼핑',
+  'travel_place' => '여행·장소',
+  'life_tip' => '생활·팁',
+  'other' => '기타',
+  _ => null,
+};
 
 String _legacyPrimaryCategory(Map<String, Object?> json) {
   final kind = json['contentKind'];
@@ -1431,14 +1406,14 @@ Map<String, Object?> _legacyAxes(Map<String, Object?> json) {
 
   final kind = <Map<String, Object?>>[];
   final subcategory = json['subcategory'];
-  if (subcategory is String && isValidContentSubcategory(subcategory)) {
+  if (subcategory is String && isValidTagName(subcategory)) {
     kind.add(label(subcategory, json['subcategoryConfidence']));
   }
 
   final location = <Map<String, Object?>>[];
   final place = json['place'];
   final area = place is Map<String, Object?> ? place['searchArea'] : null;
-  if (area is String && isValidContentSubcategory(area)) {
+  if (area is String && isValidTagName(area)) {
     location.add(
       label(area, place is Map<String, Object?> ? place['confidence'] : 0),
     );
@@ -1476,8 +1451,8 @@ Map<String, Object?> _migratedAxes(Object? stored) {
     };
   }
   return {
-    for (final axis in ContentAxis.values)
-      axis.name: stored[axis.name] ?? empty,
+    for (final axis in const ['kind', 'location', 'access', 'savedReason'])
+      axis: stored[axis] ?? empty,
   };
 }
 
@@ -1557,20 +1532,7 @@ String _legacyProductSubcategory(
   if (normalized.isEmpty || !preserveUnrecognizedCategory) {
     return '뷰티';
   }
-  return normalizeContentSubcategory(category!);
-}
-
-String _defaultSubcategoryForFolder(ContentFolder folder) {
-  return switch (folder) {
-    ContentFolder.beauty => '뷰티',
-    ContentFolder.healthFitness => '건강 루틴',
-    ContentFolder.restaurantCafe => '맛집·카페',
-    ContentFolder.recipe => '요리',
-    ContentFolder.shopping => '상품',
-    ContentFolder.travelPlace => '장소',
-    ContentFolder.lifeTip => '생활 팁',
-    ContentFolder.other || ContentFolder.needsClassification => '기타',
-  };
+  return normalizeTagName(category!);
 }
 
 PlaceCategory? _placeCategory(Object? value) {
@@ -1658,8 +1620,7 @@ final class CaptureRecord {
     required this.analysis,
     this.review,
     this.groupId,
-    this.folderOverride,
-    this.subcategoryOverride,
+    this.tagOverride,
   });
 
   final RawCapture raw;
@@ -1668,54 +1629,53 @@ final class CaptureRecord {
   final AnalysisRun? analysis;
   final UserReview? review;
   final String? groupId;
-  final ContentFolder? folderOverride;
-  final String? subcategoryOverride;
+
+  /// The tags the reader settled on, when they have touched them.
+  ///
+  /// Null means they have not, and the analysis's own tags stand. Kept beside
+  /// the analysis rather than written into it, so a correction never overwrites
+  /// what the model actually said.
+  final List<ContentTag>? tagOverride;
 
   ProductMention? get primaryMention {
     final mentions = analysis?.productMentions;
     return mentions == null || mentions.isEmpty ? null : mentions.first;
   }
 
-  ContentFolder get contentFolder {
-    final override = folderOverride;
-    if (override != null) {
-      return override;
-    }
-    final structured = analysis?.structuredContent;
-    if (structured != null) {
-      return structured.categoryNeedsReview
-          ? ContentFolder.needsClassification
-          : structured.primaryCategory;
-    }
-    if (primaryMention != null) {
-      return ContentFolder.beauty;
-    }
-    return ContentFolder.needsClassification;
-  }
+  /// Every word this capture is filed under.
+  ///
+  /// Empty is a real answer: a capture the analysis could not place carries no
+  /// tags, which is what 분류 필요 used to say by putting it in a folder named
+  /// after not knowing.
+  List<ContentTag> get contentTags {
+    final override = tagOverride;
+    if (override != null) return dedupedTags(override);
 
-  String get contentSubcategory {
-    final override = subcategoryOverride;
-    if (override != null) {
-      return normalizeContentSubcategory(override);
-    }
     final structured = analysis?.structuredContent;
-    if (structured != null) {
-      return structured.subcategory;
-    }
+    if (structured != null) return structured.tags;
+
+    // A capture from before the analyser read images at all. Its product
+    // category is the one word it ever had.
     final mention = primaryMention;
     if (mention != null) {
-      return _legacyProductSubcategory(mention.category.value);
+      return dedupedTags([
+        ContentTag(
+          value: _legacyProductSubcategory(mention.category.value),
+          confidence: mention.category.confidence,
+        ),
+      ]);
     }
-    return _defaultSubcategoryForFolder(contentFolder);
+    return const <ContentTag>[];
   }
+
+  bool hasTag(String value) => contentTags.any((tag) => tag.value == value);
 
   CaptureRecord copyWith({
     CaptureStatus? status,
     AnalysisRun? analysis,
     UserReview? review,
     String? groupId,
-    ContentFolder? folderOverride,
-    String? subcategoryOverride,
+    List<ContentTag>? tagOverride,
   }) {
     return CaptureRecord(
       raw: raw,
@@ -1724,10 +1684,7 @@ final class CaptureRecord {
       analysis: analysis ?? this.analysis,
       review: review ?? this.review,
       groupId: groupId ?? this.groupId,
-      folderOverride: folderOverride ?? this.folderOverride,
-      subcategoryOverride: subcategoryOverride == null
-          ? this.subcategoryOverride
-          : normalizeContentSubcategory(subcategoryOverride),
+      tagOverride: tagOverride ?? this.tagOverride,
     );
   }
 }

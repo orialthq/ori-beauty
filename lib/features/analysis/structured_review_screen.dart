@@ -8,7 +8,7 @@ import '../../data/place_reminder_service.dart';
 import '../../domain/models.dart';
 import '../../state/app_controller.dart';
 import '../common/capture_action_ui.dart';
-import '../common/content_folder_ui.dart';
+import '../common/tag_ui.dart';
 import '../sharing/share_tip_screen.dart';
 
 typedef MapOpenedCallback =
@@ -38,9 +38,7 @@ final class StructuredReviewScreen extends StatefulWidget {
 
 final class _StructuredReviewScreenState extends State<StructuredReviewScreen> {
   var _saving = false;
-  ContentFolder? _selectedFolder;
-  String? _selectedSubcategory;
-  var _subcategoryEdited = false;
+  List<ContentTag>? _selectedTags;
 
   @override
   Widget build(BuildContext context) {
@@ -51,9 +49,7 @@ final class _StructuredReviewScreenState extends State<StructuredReviewScreen> {
     }
     final isOrganized = capture.status == CaptureStatus.organized;
     final isPortableTip = capture.raw.origin == CaptureOrigin.portableTip;
-    final selectedFolder = _selectedFolder ?? capture.contentFolder;
-    final selectedSubcategory =
-        _selectedSubcategory ?? capture.contentSubcategory;
+    final selectedTags = _selectedTags ?? capture.contentTags;
 
     return Scaffold(
       appBar: AppBar(
@@ -149,44 +145,18 @@ final class _StructuredReviewScreenState extends State<StructuredReviewScreen> {
             _SourceGallery(attachments: capture.raw.attachments),
           ],
           const SizedBox(height: 32),
-          _SectionTitle(
-            title: isPortableTip ? '저장 분류' : '자동 분류',
-            editable: true,
-          ),
+          _SectionTitle(title: isPortableTip ? '받은 태그' : '태그', editable: true),
           const SizedBox(height: 14),
-          ContentFolderPicker(
-            key: const Key('content-folder-picker'),
-            value: selectedFolder,
-            needsReview: selectedFolder == ContentFolder.needsClassification,
-            onChanged: (folder) {
-              setState(() => _selectedFolder = folder);
+          TagEditor(
+            key: const Key('content-tag-editor'),
+            tags: selectedTags,
+            onChanged: (tags) {
+              setState(() => _selectedTags = tags);
+              // Already filed, so a change here is a correction to something
+              // the library is showing rather than part of filing it.
               if (isOrganized) {
                 unawaited(
-                  widget.controller.updateContentFolder(
-                    widget.captureId,
-                    folder,
-                  ),
-                );
-              }
-            },
-          ),
-          const SizedBox(height: 10),
-          ContentSubcategoryPicker(
-            key: const Key('content-subcategory-picker'),
-            folder: selectedFolder,
-            value: selectedSubcategory,
-            aiSuggested: !isPortableTip && !_subcategoryEdited,
-            onChanged: (subcategory) {
-              setState(() {
-                _selectedSubcategory = subcategory;
-                _subcategoryEdited = true;
-              });
-              if (isOrganized) {
-                unawaited(
-                  widget.controller.updateContentSubcategory(
-                    widget.captureId,
-                    subcategory,
-                  ),
+                  widget.controller.updateCaptureTags(widget.captureId, tags),
                 );
               }
             },
@@ -277,8 +247,7 @@ final class _StructuredReviewScreenState extends State<StructuredReviewScreen> {
     try {
       await widget.controller.confirmStructured(
         widget.captureId,
-        folder: _selectedFolder ?? capture.contentFolder,
-        subcategory: _selectedSubcategory ?? capture.contentSubcategory,
+        tags: _selectedTags ?? capture.contentTags,
       );
       if (mounted) {
         Navigator.of(context).pop();

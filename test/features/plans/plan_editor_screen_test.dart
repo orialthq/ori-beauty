@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ori_beauty/core/app_theme.dart';
-import 'package:ori_beauty/domain/models.dart';
 import 'package:ori_beauty/features/plans/plan_editor_screen.dart';
 
 void main() {
@@ -25,8 +24,7 @@ void main() {
             PlanSourceOption(
               captureId: 'capture-1',
               title: '성수 맛집 캡처',
-              folder: ContentFolder.restaurantCafe,
-              subcategory: '한식',
+              tags: ['맛집·카페', '한식'],
               subtitle: '식당 세 곳을 정리한 콘텐츠',
             ),
           ],

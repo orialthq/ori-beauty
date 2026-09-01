@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
-import '../common/content_folder_ui.dart';
 import '../common/shell_menu_button.dart';
 import '../plans/plan_date_dialog.dart';
 import '../plans/plan_editor_screen.dart';
@@ -143,7 +142,7 @@ final class _PromptBoxState extends State<_PromptBox> {
   TimeOfDay? _time;
   String? _place;
   PlanDraftRecurrence? _recurrence;
-  List<PlanContentScope>? _scopes;
+  List<String>? _scopes;
 
   @override
   void initState() {
@@ -269,7 +268,7 @@ final class _PromptBoxState extends State<_PromptBox> {
         final choice = await showPlanScopeSheet(
           context,
           sources: widget.sources,
-          selected: _scopes ?? const <PlanContentScope>[],
+          selected: _scopes ?? const <String>[],
         );
         if (choice == null || !mounted) return;
         setState(() => _scopes = choice.scopes);
@@ -376,7 +375,7 @@ final class _PromptBoxState extends State<_PromptBox> {
       scheduledAt: _scheduledAt,
       endsAt: _endDate,
       locationQuery: hasPlace ? place : null,
-      scopes: _scopes ?? const <PlanContentScope>[],
+      scopes: _scopes ?? const <String>[],
     );
   }
 
@@ -532,14 +531,13 @@ final class _PromptBoxState extends State<_PromptBox> {
     PlanDraftRecurrence.onReentry => '다시 방문할 때',
   };
 
-  /// The same shape [PlanScopeField] uses: one folder is named outright, more
-  /// than one by the first and a count.
-  static String _scopeLabel(List<PlanContentScope> scopes) {
+  /// The same shape [PlanScopeField] uses: one tag is named outright, more than
+  /// one by the first and a count.
+  static String _scopeLabel(List<String> scopes) {
     if (scopes.isEmpty) return '어디서든';
-    final first = scopes.first.subcategory == null
-        ? scopes.first.folder.label
-        : '${scopes.first.folder.label} · ${scopes.first.subcategory}';
-    return scopes.length == 1 ? first : '$first 외 ${scopes.length - 1}곳';
+    return scopes.length == 1
+        ? scopes.single
+        : '${scopes.first} 외 ${scopes.length - 1}개';
   }
 }
 

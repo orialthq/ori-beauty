@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../../core/app_theme.dart';
 import '../common/shell_menu_button.dart';
 import '../../state/app_controller.dart';
-import '../common/content_folder_ui.dart';
 
 /// What other people sent, waiting to be decided on.
 ///
@@ -101,8 +100,8 @@ final class _SharedCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tip = entry.tip;
-    final folder = tip.category;
-    final subcategory = tip.subcategory.trim();
+    final tags = tip.tags;
+    final filedAs = tags.isEmpty ? '태그 없음' : tags.join(' · ');
     return Material(
       key: Key('shared-tip-${entry.transportId}'),
       color: AppTheme.surface,
@@ -115,7 +114,7 @@ final class _SharedCard extends StatelessWidget {
         onTap: onTap,
         child: Semantics(
           button: true,
-          label: '${tip.title}, ${folder.label}, ${_ago(tip.exportedAt)}',
+          label: '${tip.title}, $filedAs, ${_ago(tip.exportedAt)}',
           child: ExcludeSemantics(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
@@ -124,21 +123,11 @@ final class _SharedCard extends StatelessWidget {
                 children: [
                   Row(
                     children: [
-                      // Which folder it would land in, in that folder's colour.
                       // The sender's name would sit here, and cannot yet: a
                       // package carries no idea of who sent it.
-                      Container(
-                        width: 12,
-                        height: 12,
-                        decoration: BoxDecoration(
-                          color: folder.color,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          '${folder.label} · ${_ago(tip.exportedAt)}',
+                          '$filedAs · ${_ago(tip.exportedAt)}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -164,10 +153,10 @@ final class _SharedCard extends StatelessWidget {
                       letterSpacing: -0.6,
                     ),
                   ),
-                  if (subcategory.isNotEmpty) ...[
+                  if (tip.summary.trim().isNotEmpty) ...[
                     const SizedBox(height: 6),
                     Text(
-                      subcategory,
+                      tip.summary.trim(),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(

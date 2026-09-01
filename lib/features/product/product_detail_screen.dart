@@ -6,7 +6,7 @@ import '../../core/app_theme.dart';
 import '../../core/formatters.dart';
 import '../../domain/models.dart';
 import '../../state/app_controller.dart';
-import '../common/content_folder_ui.dart';
+import '../common/tag_ui.dart';
 import '../common/product_ui.dart';
 
 final class ProductDetailScreen extends StatelessWidget {
@@ -47,27 +47,11 @@ final class ProductDetailScreen extends StatelessWidget {
             children: [
               _ProductHeader(group: group),
               const SizedBox(height: 24),
-              ContentFolderPicker(
-                value: controller.folderForGroup(groupId),
-                onChanged: (folder) {
-                  unawaited(
-                    controller.updateGroupContentFolder(groupId, folder),
-                  );
-                },
-              ),
-              const SizedBox(height: 10),
-              ContentSubcategoryPicker(
-                key: const Key('content-subcategory-picker'),
-                folder: controller.folderForGroup(groupId),
-                value: controller.subcategoryForGroup(groupId),
-                aiSuggested: false,
-                onChanged: (subcategory) {
-                  unawaited(
-                    controller.updateGroupContentSubcategory(
-                      groupId,
-                      subcategory,
-                    ),
-                  );
+              TagEditor(
+                key: const Key('content-tag-editor'),
+                tags: controller.tagsForGroup(groupId),
+                onChanged: (tags) {
+                  unawaited(controller.updateGroupTags(groupId, tags));
                 },
               ),
               const SizedBox(height: 36),

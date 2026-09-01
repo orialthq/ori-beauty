@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 
-import '../domain/models.dart';
 import 'analysis_server.dart';
 import 'recommendation_candidates.dart';
 
@@ -23,7 +22,6 @@ final class PlanTodoSavedItem {
     required this.id,
     required this.name,
     required this.why,
-    this.folder,
   });
 
   /// The capture or product group in the reader's library. Checked against what
@@ -34,20 +32,12 @@ final class PlanTodoSavedItem {
   /// library that may have changed.
   final String name;
 
-  /// Which of the eight folders this came out of.
-  ///
-  /// Echoed back by the server from the candidate that was sent, never asked of
-  /// the model. Null for plans made before this was carried, and for a name the
-  /// server could not match to a folder — a card simply shows one dot fewer.
-  final ContentFolder? folder;
-
   /// Why it serves this particular to-do, in one sentence.
   final String why;
 
   Map<String, Object?> toJson() => <String, Object?>{
     'id': id,
     'name': name,
-    if (folder != null) 'folder': folder!.name,
     if (why.isNotEmpty) 'why': why,
   };
 
@@ -61,21 +51,8 @@ final class PlanTodoSavedItem {
     return PlanTodoSavedItem(
       id: id,
       name: name,
-      folder: _folderNamed(raw['folder']),
       why: raw['why'] is String ? (raw['why']! as String).trim() : '',
     );
-  }
-
-  /// The enum name as [RecommendationCandidate.toJson] wrote it.
-  ///
-  /// Anything unrecognised comes back null rather than throwing: a saved thing
-  /// with no folder still belongs on its to-do.
-  static ContentFolder? _folderNamed(Object? value) {
-    if (value is! String) return null;
-    for (final folder in ContentFolder.values) {
-      if (folder.name == value) return folder;
-    }
-    return null;
   }
 }
 

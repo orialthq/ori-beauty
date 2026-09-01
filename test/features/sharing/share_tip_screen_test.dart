@@ -3,7 +3,6 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ori_beauty/core/app_theme.dart';
 import 'package:ori_beauty/domain/models.dart';
-import 'package:ori_beauty/features/common/content_folder_ui.dart';
 import 'package:ori_beauty/features/sharing/share_tip_screen.dart';
 
 void main() {
@@ -101,7 +100,7 @@ void main() {
     final background = tester.widget<ColoredBox>(backgroundFinder);
     expect(
       background.color,
-      capture.contentFolder.color,
+      AppTheme.primary,
       reason: 'The exported PNG frame must not leave transparent corners.',
     );
   });
@@ -147,15 +146,11 @@ CaptureRecord _denseCapture() {
     ),
   ];
   const structured = StructuredContentAnalysis(
-    schemaVersion: '1.2',
+    schemaVersion: '2.0',
     model: 'gpt-5.6-luna',
     domain: ContentDomain.food,
     contentKind: ContentKind.place,
-    primaryCategory: ContentFolder.restaurantCafe,
-    categoryConfidence: 1,
-    subcategory: '한식',
-    subcategoryConfidence: 1,
-    axes: ContentAxes.empty(),
+    tags: [ContentTag(value: '한식')],
     completeness: StructuredCompleteness.complete,
     title: StructuredTitle(
       value: '친구들과 꼭 같이 가보고 싶은 종로 철판쭈꾸미 맛집',

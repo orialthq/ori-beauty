@@ -104,9 +104,8 @@ export const RECOMMENDATION_TEXT_FORMAT = {
 /// than sent as nulls for the model to read past.
 function candidateLine(candidate) {
   const parts = [`id=${candidate.id}`, `이름=${candidate.name}`];
-  if (candidate.folder) parts.push(`분류=${candidate.folder}`);
   if (candidate.area) parts.push(`지역=${candidate.area}`);
-  if (candidate.labels?.length) parts.push(`특징=${candidate.labels.join("·")}`);
+  if (candidate.tags?.length) parts.push(`태그=${candidate.tags.join("·")}`);
   if (candidate.saveCount > 1) parts.push(`저장=${candidate.saveCount}번`);
   if (candidate.lastSavedAt) parts.push(`마지막저장=${candidate.lastSavedAt}`);
   return `- ${parts.join(" | ")}`;

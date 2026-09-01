@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
-import '../../domain/models.dart';
-import '../common/content_folder_ui.dart';
 import 'plan_editor_screen.dart';
 
 /// What the reader settled on in the scope sheet.
@@ -13,19 +11,19 @@ import 'plan_editor_screen.dart';
 final class PlanScopeChoice {
   const PlanScopeChoice(this.scopes);
 
-  final List<PlanContentScope> scopes;
+  final List<String> scopes;
 }
 
-/// Picks the folders a plan searches in, one level at a time.
+/// Picks the tags a plan searches under.
 ///
-/// Two levels rather than a flat list of every child folder. Eight parents fit
-/// on a screen and a reader knows which one a thing went into; the children are
-/// named by the analyser and there can be dozens, so they are only worth showing
-/// once the parent has narrowed things down.
+/// One flat list, most used first, because that is the shape the library has:
+/// there is no parent to open and no child to find inside it. The count beside
+/// each name is what tells a reader which of two similar words their things
+/// actually went under.
 Future<PlanScopeChoice?> showPlanScopeSheet(
   BuildContext context, {
   required List<PlanSourceOption> sources,
-  required List<PlanContentScope> selected,
+  required List<String> selected,
 }) {
   return showModalBottomSheet<PlanScopeChoice>(
     context: context,
@@ -40,7 +38,7 @@ final class _PlanScopeSheet extends StatefulWidget {
   const _PlanScopeSheet({required this.sources, required this.selected});
 
   final List<PlanSourceOption> sources;
-  final List<PlanContentScope> selected;
+  final List<String> selected;
 
   @override
   State<_PlanScopeSheet> createState() => _PlanScopeSheetState();
@@ -49,58 +47,41 @@ final class _PlanScopeSheet extends StatefulWidget {
 final class _PlanScopeSheetState extends State<_PlanScopeSheet> {
   late var _scopes = widget.selected;
 
-  /// The parent being looked inside, or null at the top level.
-  ContentFolder? _open;
-
   /// How many saved things the current picks cover between them.
-  int get _count => widget.sources
-      .where((one) => planScopesMatch(_scopes, one.folder, one.subcategory))
-      .length;
+  int get _count =>
+      widget.sources.where((one) => planScopeMatches(_scopes, one.tags)).length;
 
-  /// Folders that actually hold something, in the order 정리함 shows them.
-  Map<ContentFolder, int> get _folders {
-    final counts = <ContentFolder, int>{};
-    for (final source in widget.sources) {
-      counts[source.folder] = (counts[source.folder] ?? 0) + 1;
-    }
-    return <ContentFolder, int>{
-      for (final folder in ContentFolder.values) folder: ?counts[folder],
-    };
-  }
-
-  Map<String, int> _subcategories(ContentFolder folder) {
+  /// Every tag in the library with something under it, most used first. Ties
+  /// fall back to the name so the list does not shuffle.
+  List<({String name, int count})> get _tags {
     final counts = <String, int>{};
     for (final source in widget.sources) {
-      if (source.folder != folder) continue;
-      final name = source.subcategory.trim();
-      if (name.isEmpty) continue;
-      counts[name] = (counts[name] ?? 0) + 1;
+      for (final tag in source.tags) {
+        counts[tag] = (counts[tag] ?? 0) + 1;
+      }
     }
-    final names = counts.keys.toList()..sort();
-    return <String, int>{for (final name in names) name: counts[name]!};
+    final names = counts.keys.toList()
+      ..sort((a, b) {
+        final byCount = counts[b]!.compareTo(counts[a]!);
+        return byCount != 0 ? byCount : a.compareTo(b);
+      });
+    return [for (final name in names) (name: name, count: counts[name]!)];
   }
 
-  bool _has(PlanContentScope scope) => _scopes.contains(scope);
-
-  /// How many picks name this folder, so a parent row can say what is on inside
-  /// it without opening.
-  int _picksIn(ContentFolder folder) =>
-      _scopes.where((one) => one.folder == folder).length;
-
-  void _toggle(PlanContentScope scope) {
+  void _toggle(String tag) {
     setState(() {
-      _scopes = _has(scope)
-          ? <PlanContentScope>[
+      _scopes = _scopes.contains(tag)
+          ? <String>[
               for (final one in _scopes)
-                if (one != scope) one,
+                if (one != tag) one,
             ]
-          : planScopesWith(_scopes, scope);
+          : <String>[..._scopes, tag];
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    final open = _open;
+    final tags = _tags;
     return SafeArea(
       top: false,
       maintainBottomViewPadding: true,
@@ -111,21 +92,60 @@ final class _PlanScopeSheetState extends State<_PlanScopeSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (open == null) ..._top() else ..._inside(open),
+            const Text(
+              '어디서 찾을까요?',
+              style: TextStyle(
+                color: AppTheme.planInk,
+                fontSize: 20,
+                height: 1.3,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.4,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _scopes.isEmpty
+                  ? '고르지 않으면 저장한 것 전부에서 찾아요.'
+                  : '고른 태그 중 하나라도 붙은 것 $_count개에서 찾아요.',
+              style: const TextStyle(
+                color: AppTheme.planMuted,
+                fontSize: 13,
+                height: 1.45,
+              ),
+            ),
+            const SizedBox(height: 14),
+            if (tags.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 24),
+                child: Text(
+                  '아직 태그가 붙은 게 없어요.',
+                  style: TextStyle(color: AppTheme.planSubtle, fontSize: 14),
+                ),
+              )
+            else
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: tags.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 6),
+                  itemBuilder: (context, index) => _Choice(
+                    label: tags[index].name,
+                    count: tags[index].count,
+                    selected: _scopes.contains(tags[index].name),
+                    onTap: () => _toggle(tags[index].name),
+                  ),
+                ),
+              ),
             const SizedBox(height: 12),
-            // Picking no longer closes the sheet, so there has to be a way out
+            // Picking does not close the sheet, so there has to be a way out
             // that means "done" rather than "cancel".
             SizedBox(
               width: double.infinity,
               child: FilledButton(
                 key: const Key('plan-scope-done'),
                 onPressed: () =>
-                    Navigator.of(context).pop(PlanScopeChoice(_scopes)),
-                child: Text(
-                  _scopes.isEmpty
-                      ? '어디서든 찾기 · $_count개'
-                      : '${_scopes.length}곳에서 찾기 · $_count개',
-                ),
+                    Navigator.pop(context, PlanScopeChoice(_scopes)),
+                child: const Text('선택 완료'),
               ),
             ),
           ],
@@ -133,178 +153,85 @@ final class _PlanScopeSheetState extends State<_PlanScopeSheet> {
       ),
     );
   }
-
-  List<Widget> _top() {
-    final folders = _folders;
-    return <Widget>[
-      Text('어디서 찾을까요?', style: Theme.of(context).textTheme.titleLarge),
-      const SizedBox(height: 6),
-      const Text(
-        '고른 폴더 안에서만 저장한 것을 꺼내요. 여러 곳을 고를 수 있어요.',
-        style: TextStyle(color: AppTheme.planMuted, fontSize: 14, height: 1.45),
-      ),
-      const SizedBox(height: 16),
-      Flexible(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            _Choice(
-              key: const Key('plan-scope-all'),
-              label: '어디서든 찾기',
-              detail: '저장한 것 ${widget.sources.length}개 전부',
-              icon: Icons.all_inclusive_rounded,
-              color: AppTheme.planMuted,
-              selected: _scopes.isEmpty,
-              // Clearing rather than adding. "Everywhere" is the absence of a
-              // fence, so it cannot sit in the list beside one.
-              onTap: () => setState(() => _scopes = const <PlanContentScope>[]),
-            ),
-            const Divider(height: 1, indent: 58),
-            for (final entry in folders.entries)
-              _Choice(
-                key: Key('plan-scope-folder-${entry.key.name}'),
-                label: entry.key.label,
-                detail: _folderDetail(entry.key, entry.value),
-                icon: entry.key.icon,
-                color: entry.key.color,
-                selected: _picksIn(entry.key) > 0,
-                // Straight in rather than picking here. Choosing the whole
-                // folder is the first row on the next screen, so one tap always
-                // means "look inside" and never silently commits.
-                chevron: true,
-                onTap: () => setState(() => _open = entry.key),
-              ),
-          ],
-        ),
-      ),
-    ];
-  }
-
-  String _folderDetail(ContentFolder folder, int total) {
-    final picks = _scopes.where((one) => one.folder == folder).toList();
-    if (picks.isEmpty) return '$total개';
-    if (picks.length == 1 && picks.single.subcategory == null) {
-      return '전체 선택됨 · $total개';
-    }
-    return '${picks.map((one) => one.subcategory).join(', ')} 선택됨';
-  }
-
-  List<Widget> _inside(ContentFolder folder) {
-    final subcategories = _subcategories(folder);
-    final total = _folders[folder] ?? 0;
-    return <Widget>[
-      Row(
-        children: [
-          IconButton(
-            key: const Key('plan-scope-back'),
-            onPressed: () => setState(() => _open = null),
-            icon: const Icon(Icons.arrow_back_rounded),
-            tooltip: '폴더 목록',
-          ),
-          const SizedBox(width: 4),
-          Expanded(
-            child: Text(
-              folder.label,
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-          ),
-        ],
-      ),
-      const SizedBox(height: 12),
-      Flexible(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            _Choice(
-              key: Key('plan-scope-whole-${folder.name}'),
-              label: '${folder.label} 전체',
-              detail: '$total개',
-              icon: folder.icon,
-              color: folder.color,
-              selected: _has(PlanContentScope(folder: folder)),
-              onTap: () => _toggle(PlanContentScope(folder: folder)),
-            ),
-            if (subcategories.isNotEmpty) const Divider(height: 1, indent: 58),
-            for (final entry in subcategories.entries)
-              _Choice(
-                key: Key('plan-scope-sub-${entry.key}'),
-                label: entry.key,
-                detail: '${entry.value}개',
-                icon: Icons.subdirectory_arrow_right_rounded,
-                color: folder.color,
-                selected: _has(
-                  PlanContentScope(folder: folder, subcategory: entry.key),
-                ),
-                onTap: () => _toggle(
-                  PlanContentScope(folder: folder, subcategory: entry.key),
-                ),
-              ),
-          ],
-        ),
-      ),
-    ];
-  }
 }
 
 final class _Choice extends StatelessWidget {
   const _Choice({
     required this.label,
-    required this.detail,
-    required this.icon,
-    required this.color,
+    required this.count,
     required this.selected,
     required this.onTap,
-    this.chevron = false,
-    super.key,
   });
 
   final String label;
-  final String detail;
-  final IconData icon;
-  final Color color;
+  final int count;
   final bool selected;
-  final bool chevron;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      minVerticalPadding: 10,
-      leading: Container(
-        width: 42,
-        height: 42,
-        decoration: BoxDecoration(
-          color: Color.alphaBlend(
-            color.withValues(alpha: 0.16),
-            AppTheme.planSurface,
-          ),
-          borderRadius: BorderRadius.circular(13),
+    return Material(
+      key: Key('plan-scope-tag-$label'),
+      color: selected ? AppTheme.planMauveSoft : AppTheme.fill,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(
+          color: selected ? AppTheme.planMauve : AppTheme.planBorder,
         ),
-        alignment: Alignment.center,
-        child: Icon(icon, color: color, size: 21),
       ),
-      title: Text(
-        label,
-        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Semantics(
+          button: true,
+          selected: selected,
+          label: '$label, 저장한 것 $count개',
+          child: ExcludeSemantics(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 52),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    Icon(
+                      selected
+                          ? Icons.check_circle_rounded
+                          : Icons.circle_outlined,
+                      size: 19,
+                      color: selected
+                          ? AppTheme.planMauve
+                          : AppTheme.planSubtle,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: selected
+                              ? AppTheme.planMauve
+                              : AppTheme.planInk,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      '$count',
+                      style: const TextStyle(
+                        color: AppTheme.planSubtle,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
-      subtitle: Text(
-        detail,
-        style: const TextStyle(color: AppTheme.planSubtle, fontSize: 12.5),
-      ),
-      trailing: SizedBox(
-        width: 44,
-        height: 44,
-        child: selected
-            ? const Icon(Icons.check_circle_rounded, color: AppTheme.planMauve)
-            : (chevron
-                  ? const Icon(
-                      Icons.chevron_right_rounded,
-                      color: AppTheme.planSubtle,
-                    )
-                  : null),
-      ),
-      onTap: onTap,
     );
   }
 }
@@ -318,26 +245,20 @@ final class PlanScopeField extends StatelessWidget {
     super.key,
   });
 
-  final List<PlanContentScope> scopes;
+  final List<String> scopes;
   final int count;
   final VoidCallback onTap;
 
-  /// One place is named outright; several are named by the first and a count.
-  /// Folder labels already contain `·`, so listing them all reads as one long
-  /// name rather than as a list.
+  /// One tag is named outright; several by the first and a count.
   String get _label {
     if (scopes.isEmpty) return '어디서든';
-    final first = _nameOf(scopes.first);
-    return scopes.length == 1 ? first : '$first 외 ${scopes.length - 1}곳';
+    return scopes.length == 1
+        ? scopes.single
+        : '${scopes.first} 외 ${scopes.length - 1}개';
   }
-
-  static String _nameOf(PlanContentScope scope) => scope.subcategory == null
-      ? scope.folder.label
-      : '${scope.folder.label} · ${scope.subcategory}';
 
   @override
   Widget build(BuildContext context) {
-    final folder = scopes.length == 1 ? scopes.single.folder : null;
     return Material(
       color: AppTheme.planSurface,
       shape: RoundedRectangleBorder(
@@ -357,29 +278,17 @@ final class PlanScopeField extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Row(
                   children: [
-                    Icon(
-                      folder?.icon ??
-                          (scopes.isEmpty
-                              ? Icons.all_inclusive_rounded
-                              : Icons.folder_copy_rounded),
-                      color: folder?.color ?? AppTheme.planMauve,
-                      size: 21,
+                    const Icon(
+                      Icons.sell_outlined,
+                      size: 20,
+                      color: AppTheme.planMuted,
                     ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
-                            '찾을 범위',
-                            style: TextStyle(
-                              color: AppTheme.planSubtle,
-                              fontSize: 12,
-                              height: 1.3,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
                           Text(
                             _label,
                             maxLines: 1,
@@ -387,30 +296,24 @@ final class PlanScopeField extends StatelessWidget {
                             style: const TextStyle(
                               color: AppTheme.planInk,
                               fontSize: 15,
-                              height: 1.35,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            // The number is the point of the field: it says how
-                            // much the model is about to be handed.
-                            count == 0 ? '저장한 것 없음' : '저장한 것 $count개',
-                            style: TextStyle(
-                              color: count == 0
-                                  ? AppTheme.planSand
-                                  : AppTheme.planMuted,
+                            '저장한 것 $count개',
+                            style: const TextStyle(
+                              color: AppTheme.planSubtle,
                               fontSize: 12,
-                              height: 1.3,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                         ],
                       ),
                     ),
                     const Icon(
-                      Icons.expand_more_rounded,
+                      Icons.chevron_right_rounded,
                       color: AppTheme.planSubtle,
-                      size: 21,
                     ),
                   ],
                 ),

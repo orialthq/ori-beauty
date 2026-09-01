@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
 import '../../domain/portable_tip_package.dart';
-import '../common/content_folder_ui.dart';
 
 enum ReceivedTipDecision { save, discard }
 
@@ -65,10 +64,13 @@ final class _ReceivedTipSheet extends StatelessWidget {
                   width: 48,
                   height: 48,
                   decoration: BoxDecoration(
-                    color: tip.category.softColor,
+                    color: AppTheme.primarySoft,
                     borderRadius: BorderRadius.circular(16),
                   ),
-                  child: Icon(Icons.redeem_rounded, color: tip.category.color),
+                  child: const Icon(
+                    Icons.redeem_rounded,
+                    color: AppTheme.primary,
+                  ),
                 ),
                 const SizedBox(width: 13),
                 Expanded(
@@ -81,7 +83,7 @@ final class _ReceivedTipSheet extends StatelessWidget {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        '${tip.category.label} · ${tip.subcategory}',
+                        tip.tags.isEmpty ? '태그 없음' : tip.tags.join(' · '),
                         style: const TextStyle(
                           color: AppTheme.muted,
                           fontSize: 13,
@@ -99,7 +101,7 @@ final class _ReceivedTipSheet extends StatelessWidget {
                 width: double.infinity,
                 padding: const EdgeInsets.fromLTRB(16, 13, 16, 13),
                 decoration: BoxDecoration(
-                  color: tip.category.softColor,
+                  color: AppTheme.primarySoft,
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: Text(

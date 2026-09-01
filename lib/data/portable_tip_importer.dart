@@ -65,33 +65,20 @@ CaptureRecord captureFromImportedPortableTip(ImportedPortableTip imported) {
   ];
   final place = tip.place;
   final contentKind = _contentKindFor(
-    tip.category,
+    tip.tags,
     hasRecipe: ingredientGroups.isNotEmpty || steps.isNotEmpty,
     hasPlace: place != null,
   );
 
   final structured = StructuredContentAnalysis(
-    schemaVersion: '1.2',
+    schemaVersion: '2.0',
     model: 'portable-tip-v1',
-    domain: _domainFor(tip.category),
+    domain: _domainFor(tip.tags),
     contentKind: contentKind,
-    primaryCategory: tip.category,
-    categoryConfidence: 1,
-    subcategory: tip.subcategory,
-    subcategoryConfidence: 1,
-    // A received tip carries one subcategory and no axis breakdown, so it lands
-    // on the kind axis alone.
-    axes: ContentAxes(
-      labels: {
-        ContentAxis.kind: [
-          AxisLabel(
-            value: tip.subcategory,
-            confidence: 1,
-            evidenceIds: const [],
-          ),
-        ],
-      },
-    ),
+    // The sender's tags, kept as suggestions rather than as this reader's own
+    // decisions: they were somebody else's analysis, and a later pass may
+    // rewrite them the same way it rewrites this library's.
+    tags: dedupedTags([for (final tag in tip.tags) ContentTag(value: tag)]),
     completeness: StructuredCompleteness.complete,
     title: StructuredTitle(
       value: tip.title,
@@ -107,7 +94,7 @@ CaptureRecord captureFromImportedPortableTip(ImportedPortableTip imported) {
             // The portable tip format carries no area; the address still
             // yields one on the receiving side.
             searchArea: null,
-            category: _placeCategoryFor(tip.category),
+            category: _placeCategoryFor(tip.tags),
             confidence: 1,
             evidenceIds: const [],
           ),
@@ -131,8 +118,7 @@ CaptureRecord captureFromImportedPortableTip(ImportedPortableTip imported) {
   final semanticMaterial = [
     tip.title,
     tip.summary,
-    tip.category.name,
-    tip.subcategory,
+    ...tip.tags,
     ...tip.sections.expand((section) => section.items),
     ?sourceUrl,
   ].join('\n');
@@ -188,40 +174,38 @@ CaptureRecord captureFromImportedPortableTip(ImportedPortableTip imported) {
       resolution: ReviewResolution.confirmed,
       reviewedAt: importedAt,
     ),
-    folderOverride: tip.category,
-    subcategoryOverride: tip.subcategory,
   );
 }
 
-ContentDomain _domainFor(ContentFolder folder) => switch (folder) {
-  ContentFolder.beauty => ContentDomain.beauty,
-  ContentFolder.restaurantCafe || ContentFolder.recipe => ContentDomain.food,
-  _ => ContentDomain.unknown,
-};
+ContentDomain _domainFor(List<String> tags) {
+  if (tags.contains('뷰티')) return ContentDomain.beauty;
+  if (tags.contains('맛집·카페') || tags.contains('레시피')) {
+    return ContentDomain.food;
+  }
+  return ContentDomain.unknown;
+}
 
 ContentKind _contentKindFor(
-  ContentFolder folder, {
+  List<String> tags, {
   required bool hasRecipe,
   required bool hasPlace,
 }) {
-  if (hasRecipe || folder == ContentFolder.recipe) return ContentKind.recipe;
-  if (hasPlace ||
-      folder == ContentFolder.restaurantCafe ||
-      folder == ContentFolder.travelPlace) {
+  if (hasRecipe || tags.contains('레시피')) return ContentKind.recipe;
+  if (hasPlace || tags.contains('맛집·카페') || tags.contains('여행·장소')) {
     return ContentKind.place;
   }
-  if (folder == ContentFolder.beauty) return ContentKind.beautyProduct;
-  if (folder == ContentFolder.shopping) return ContentKind.commerceProduct;
+  if (tags.contains('뷰티')) return ContentKind.beautyProduct;
+  if (tags.contains('쇼핑')) return ContentKind.commerceProduct;
   return ContentKind.unknown;
 }
 
-PlaceCategory _placeCategoryFor(ContentFolder folder) => switch (folder) {
-  ContentFolder.restaurantCafe => PlaceCategory.restaurant,
-  ContentFolder.beauty => PlaceCategory.beauty,
-  ContentFolder.shopping => PlaceCategory.shopping,
-  ContentFolder.travelPlace => PlaceCategory.activity,
-  _ => PlaceCategory.other,
-};
+PlaceCategory _placeCategoryFor(List<String> tags) {
+  if (tags.contains('맛집·카페')) return PlaceCategory.restaurant;
+  if (tags.contains('뷰티')) return PlaceCategory.beauty;
+  if (tags.contains('쇼핑')) return PlaceCategory.shopping;
+  if (tags.contains('여행·장소')) return PlaceCategory.activity;
+  return PlaceCategory.other;
+}
 
 SourcePlatform _sourcePlatform(String rawUrl) {
   final host = Uri.tryParse(rawUrl)?.host.toLowerCase() ?? '';

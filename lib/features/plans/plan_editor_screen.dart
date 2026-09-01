@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/app_theme.dart';
-import '../../domain/models.dart';
 import 'plan_date_dialog.dart';
 import 'plan_scope_sheet.dart';
 import 'plan_wizard_chrome.dart';
@@ -58,8 +57,7 @@ final class PlanSourceOption {
   const PlanSourceOption({
     required this.captureId,
     required this.title,
-    required this.folder,
-    this.subcategory = '',
+    required this.tags,
     this.subtitle,
   }) : assert(captureId != ''),
        assert(title != '');
@@ -67,102 +65,34 @@ final class PlanSourceOption {
   final String captureId;
   final String title;
 
-  /// Which of the eight folders it was filed under, and the child folder the
-  /// analyser named inside it. The editor builds its picker out of these rather
-  /// than being handed a tree, so it still needs no controller.
-  final ContentFolder folder;
-  final String subcategory;
+  /// Every word it is filed under. The editor builds its picker out of these
+  /// rather than being handed a list, so it still needs no controller.
+  final List<String> tags;
 
   final String? subtitle;
 }
 
 /// Where a plan looks for what the reader saved.
 ///
-/// Not a link to one capture — a fence around the search. The recommendation
-/// sends the library to a model, and sending all of it means the answer gets
-/// worse and dearer as the library grows. Naming a folder is the reader saying
-/// "it's in here", which is a thing they know and the model has to guess.
+/// A fence around the search rather than a link to one capture. The
+/// recommendation sends the library to a model, and sending all of it means the
+/// answer gets worse and dearer as the library grows. Naming a tag is the
+/// reader saying "it's in here", which is a thing they know and the model has
+/// to guess.
 ///
 /// Reducing is the app's job; choosing inside what is left is the model's.
-final class PlanContentScope {
-  const PlanContentScope({required this.folder, this.subcategory});
-
-  final ContentFolder folder;
-
-  /// The child folder, or null for the whole of [folder].
-  final String? subcategory;
-
-  bool matches(ContentFolder folder, String subcategory) {
-    if (folder != this.folder) return false;
-    final wanted = this.subcategory;
-    return wanted == null || wanted == subcategory;
-  }
-
-  Map<String, Object?> toJson() => <String, Object?>{
-    'folder': folder.name,
-    if (subcategory != null) 'subcategory': subcategory,
-  };
-
-  static PlanContentScope? fromJson(Object? raw) {
-    if (raw is! Map<String, Object?>) return null;
-    final name = raw['folder'];
-    if (name is! String) return null;
-    for (final folder in ContentFolder.values) {
-      if (folder.name != name) continue;
-      final subcategory = raw['subcategory'];
-      return PlanContentScope(
-        folder: folder,
-        subcategory: subcategory is String && subcategory.isNotEmpty
-            ? subcategory
-            : null,
-      );
-    }
-    return null;
-  }
-
-  @override
-  bool operator ==(Object other) =>
-      other is PlanContentScope &&
-      other.folder == folder &&
-      other.subcategory == subcategory;
-
-  @override
-  int get hashCode => Object.hash(folder, subcategory);
-}
-
-/// Whether anything in [scopes] covers this folder and child.
 ///
-/// An empty list is "everywhere" rather than "nowhere". A plan with no fence is
-/// the default, and the alternative — a plan that can never find anything —
-/// is not a state worth being able to express.
-bool planScopesMatch(
-  List<PlanContentScope> scopes,
-  ContentFolder folder,
-  String subcategory,
-) {
-  if (scopes.isEmpty) return true;
-  for (final scope in scopes) {
-    if (scope.matches(folder, subcategory)) return true;
+/// An empty list is "everywhere" rather than "nowhere": a plan with no fence is
+/// the default, and a plan that can never find anything is not a state worth
+/// being able to express. Several tags widen rather than narrow — a trip wants
+/// places and shopping and tips, and a saved thing carrying any one of them is
+/// worth showing.
+bool planScopeMatches(List<String> scope, List<String> tags) {
+  if (scope.isEmpty) return true;
+  for (final tag in tags) {
+    if (scope.contains(tag)) return true;
   }
   return false;
-}
-
-/// Adds a scope, dropping the ones it makes redundant.
-///
-/// Picking 뷰티 전체 swallows 뷰티 · 스킨케어, and picking a child drops the
-/// whole-folder entry it sat under. Kept minimal so the field's count is the
-/// number of distinct things and never double-counts.
-List<PlanContentScope> planScopesWith(
-  List<PlanContentScope> scopes,
-  PlanContentScope added,
-) {
-  return <PlanContentScope>[
-    for (final scope in scopes)
-      if (scope.folder != added.folder ||
-          (added.subcategory != null && scope.subcategory != null))
-        scope,
-    added,
-  ];
 }
 
 /// Validated output from [PlanEditorScreen].
@@ -178,7 +108,7 @@ final class PlanDraft {
     this.endsAt,
     this.locationQuery,
     this.sourceCaptureId,
-    this.scopes = const <PlanContentScope>[],
+    this.scopes = const <String>[],
     this.leadTime = PlanLeadTime.fallback,
   });
 
@@ -200,12 +130,8 @@ final class PlanDraft {
   final String? locationQuery;
   final String? sourceCaptureId;
 
-  /// Where to look for what the reader saved.
-  ///
-  /// Empty searches the whole library. More than one because a plan rarely sits
-  /// in a single folder — a trip wants places and shopping and tips, and naming
-  /// three of eight folders is still most of the library left out.
-  final List<PlanContentScope> scopes;
+  /// Which tags to look under. Empty searches the whole library.
+  final List<String> scopes;
 
   /// How long before [scheduledAt] to fire.
   ///
@@ -291,13 +217,12 @@ final class _PlanEditorScreenState extends State<PlanEditorScreen> {
   DateTime? _endsAt;
   var _leadTime = PlanLeadTime.fallback;
   late String _sourceValue;
-  var _scopes = const <PlanContentScope>[];
+  var _scopes = const <String>[];
 
   /// How many saved things the current scopes cover between them. The whole
   /// library when nothing is picked, so the field says what it will search.
-  int get _scopeCount => widget.sources
-      .where((one) => planScopesMatch(_scopes, one.folder, one.subcategory))
-      .length;
+  int get _scopeCount =>
+      widget.sources.where((one) => planScopeMatches(_scopes, one.tags)).length;
 
   /// A span only reads as a span on a plan that happens once. "매주 화요일,
   /// 5일간" is not a thing the rest of the flow could act on.
@@ -381,12 +306,9 @@ final class _PlanEditorScreenState extends State<PlanEditorScreen> {
     _endsAt = initialEnd == null ? null : DateUtils.dateOnly(initialEnd);
     // Any that name an emptied folder are dropped, so the field never promises
     // a search over nothing.
-    _scopes = <PlanContentScope>[
-      for (final scope in initial?.scopes ?? const <PlanContentScope>[])
-        if (widget.sources.any(
-          (one) => scope.matches(one.folder, one.subcategory),
-        ))
-          scope,
+    _scopes = <String>[
+      for (final scope in initial?.scopes ?? const <String>[])
+        if (widget.sources.any((one) => one.tags.contains(scope))) scope,
     ];
     final requestedSource = initial?.sourceCaptureId;
     _sourceValue =

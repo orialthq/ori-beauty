@@ -37,22 +37,24 @@ test("every Structured Outputs object is strict and requires every field", () =>
   visit(ANALYSIS_SCHEMA, "root");
 });
 
-test("subcategory contract is bounded and required in schema 1.5", () => {
-  assert.deepEqual(ANALYSIS_SCHEMA.properties.schemaVersion.enum, ["1.5"]);
-  assert.equal(ANALYSIS_SCHEMA.properties.subcategory.minLength, 2);
-  assert.equal(ANALYSIS_SCHEMA.properties.subcategory.maxLength, 20);
-  assert.equal(
-    new RegExp(ANALYSIS_SCHEMA.properties.subcategory.pattern, "u").test(
-      "카페·디저트",
-    ),
-    true,
-  );
-  assert.equal(
-    new RegExp(ANALYSIS_SCHEMA.properties.subcategory.pattern, "u").test(
-      "스킨케어✨",
-    ),
-    false,
-  );
-  assert.ok(ANALYSIS_SCHEMA.required.includes("subcategory"));
-  assert.ok(ANALYSIS_SCHEMA.required.includes("subcategoryConfidence"));
+test("tag contract is bounded and required in schema 2.0", () => {
+  const tag = ANALYSIS_SCHEMA.properties.tags.items.properties.value;
+  assert.deepEqual(ANALYSIS_SCHEMA.properties.schemaVersion.enum, ["2.0"]);
+  assert.equal(tag.minLength, 2);
+  assert.equal(tag.maxLength, 20);
+  assert.equal(new RegExp(tag.pattern, "u").test("카페·디저트"), true);
+  assert.equal(new RegExp(tag.pattern, "u").test("스킨케어✨"), false);
+  assert.ok(ANALYSIS_SCHEMA.required.includes("tags"));
+  // Observations come first so the model reads before it names.
+  assert.deepEqual(Object.keys(ANALYSIS_SCHEMA.properties.tags.items.properties), [
+    "observations",
+    "value",
+    "confidence",
+    "evidenceIds",
+  ]);
+  // The folder and its single child are gone; a capture carries as many tags as
+  // fit it.
+  assert.equal(ANALYSIS_SCHEMA.properties.primaryCategory, undefined);
+  assert.equal(ANALYSIS_SCHEMA.properties.subcategory, undefined);
+  assert.equal(ANALYSIS_SCHEMA.properties.axes, undefined);
 });

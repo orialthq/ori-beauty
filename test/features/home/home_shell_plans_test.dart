@@ -94,7 +94,12 @@ void main() {
   ) async {
     final fixture = await _HomeShellPlansFixture.create();
     addTearDown(fixture.dispose);
-    final plan = await fixture.createPlan();
+    // 지난함 opens on the month it is opened in, so the plan has to live there.
+    // Pinning it to a fixed month made this pass until that month went by.
+    final now = DateTime.now();
+    final plan = await fixture.createPlan(
+      at: DateTime.utc(now.year, now.month, 19, 17),
+    );
 
     await _pumpHomeShell(tester, fixture);
     await _openPlans(tester);
@@ -442,13 +447,13 @@ final class _HomeShellPlansFixture {
     );
   }
 
-  Future<Plan> createPlan({String? sourceCaptureId}) {
+  Future<Plan> createPlan({String? sourceCaptureId, DateTime? at}) {
     return planController.create(
       PlanDraft(
         title: '저장한 맛집 방문하기',
         triggerKind: PlanDraftTriggerKind.time,
         recurrence: PlanDraftRecurrence.daily,
-        scheduledAt: DateTime.utc(2026, 8, 19, 17),
+        scheduledAt: at ?? DateTime.utc(2026, 8, 19, 17),
         sourceCaptureId: sourceCaptureId,
       ),
     );

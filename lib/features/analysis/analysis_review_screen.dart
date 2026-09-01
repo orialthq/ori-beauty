@@ -5,7 +5,7 @@ import '../../core/formatters.dart';
 import '../../domain/models.dart';
 import '../../state/app_controller.dart';
 import '../common/capture_action_ui.dart';
-import '../common/content_folder_ui.dart';
+import '../common/tag_ui.dart';
 import '../common/product_ui.dart';
 
 final class AnalysisReviewScreen extends StatefulWidget {
@@ -28,9 +28,8 @@ final class _AnalysisReviewScreenState extends State<AnalysisReviewScreen> {
   late final TextEditingController _nameController;
   late final TextEditingController _categoryController;
   late final TextEditingController _amountController;
-  late ContentFolder _selectedFolder;
-  late String _selectedSubcategory;
-  var _subcategoryEdited = false;
+  late List<ContentTag> _selectedTags;
+  var _tagsEdited = false;
   var _saving = false;
 
   CaptureRecord? get _capture =>
@@ -48,8 +47,7 @@ final class _AnalysisReviewScreenState extends State<AnalysisReviewScreen> {
     _amountController = TextEditingController(
       text: mention?.amount.value ?? '',
     );
-    _selectedFolder = _capture?.contentFolder ?? ContentFolder.beauty;
-    _selectedSubcategory = _capture?.contentSubcategory ?? '';
+    _selectedTags = _capture?.contentTags ?? const <ContentTag>[];
   }
 
   @override
@@ -140,26 +138,15 @@ final class _AnalysisReviewScreenState extends State<AnalysisReviewScreen> {
               ),
             ],
             const SizedBox(height: 32),
-            const _SectionHeading(title: '자동 분류', editable: true),
+            const _SectionHeading(title: '태그', editable: true),
             const SizedBox(height: 14),
-            ContentFolderPicker(
-              key: const Key('content-folder-picker'),
-              value: _selectedFolder,
-              needsReview: _selectedFolder == ContentFolder.needsClassification,
-              onChanged: (folder) {
-                setState(() => _selectedFolder = folder);
-              },
-            ),
-            const SizedBox(height: 10),
-            ContentSubcategoryPicker(
-              key: const Key('content-subcategory-picker'),
-              folder: _selectedFolder,
-              value: _selectedSubcategory,
-              aiSuggested: !_subcategoryEdited,
-              onChanged: (subcategory) {
+            TagEditor(
+              key: const Key('content-tag-editor'),
+              tags: _selectedTags,
+              onChanged: (tags) {
                 setState(() {
-                  _selectedSubcategory = subcategory;
-                  _subcategoryEdited = true;
+                  _selectedTags = tags;
+                  _tagsEdited = true;
                 });
               },
             ),
@@ -267,10 +254,9 @@ final class _AnalysisReviewScreenState extends State<AnalysisReviewScreen> {
           category: _categoryController.text.trim(),
           amount: _amountController.text.trim(),
         ),
-        folder: _selectedFolder,
-        // Let the controller keep an existing product group's user-selected
-        // child folder unless this review explicitly renamed it.
-        subcategory: _subcategoryEdited ? _selectedSubcategory : null,
+        // Null unless this review changed them, so joining an existing product
+        // adopts the tags that group already carries.
+        tags: _tagsEdited ? _selectedTags : null,
       );
       if (mounted) {
         Navigator.of(context).pop();

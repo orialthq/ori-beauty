@@ -176,15 +176,11 @@ final class _PlaceAnalysisService implements ContentAnalysisService {
 
   static const _baseline = BaselineContentAnalysisService();
   static const _structured = StructuredContentAnalysis(
-    schemaVersion: '1.5',
+    schemaVersion: '2.0',
     model: 'test-model',
     domain: ContentDomain.food,
     contentKind: ContentKind.place,
-    primaryCategory: ContentFolder.restaurantCafe,
-    categoryConfidence: 0.98,
-    subcategory: '맛집',
-    subcategoryConfidence: 0.96,
-    axes: ContentAxes.empty(),
+    tags: [ContentTag(value: '맛집')],
     completeness: StructuredCompleteness.complete,
     title: StructuredTitle(
       value: '성수 맛집',

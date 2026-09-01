@@ -17,7 +17,6 @@ import '../../state/app_controller.dart';
 import '../../state/plan_controller.dart';
 import '../analysis/analysis_review_screen.dart';
 import '../analysis/structured_review_screen.dart';
-import '../common/content_folder_ui.dart';
 import '../inbox/inbox_screen.dart';
 import '../plans/past_plans_screen.dart';
 import '../plans/plan_detail_screen.dart';
@@ -629,9 +628,10 @@ final class _HomeShellState extends State<HomeShell>
           (capture) => PlanSourceOption(
             captureId: capture.raw.id,
             title: _captureTitle(capture),
-            folder: capture.contentFolder,
-            subcategory: capture.contentSubcategory,
-            subtitle: capture.contentFolder.label,
+            tags: [for (final tag in capture.contentTags) tag.value],
+            subtitle: capture.contentTags.isEmpty
+                ? '태그 없음'
+                : capture.contentTags.map((tag) => tag.value).join(' · '),
           ),
         )
         .toList(growable: false);
@@ -652,7 +652,8 @@ final class _HomeShellState extends State<HomeShell>
           ? normalized
           : '${normalized.substring(0, 42).trimRight()}…';
     }
-    return '${capture.contentFolder.label} 콘텐츠';
+    final tag = capture.contentTags.firstOrNull?.value;
+    return tag == null ? '제목 없는 콘텐츠' : '$tag 콘텐츠';
   }
 
   /// Step two of making a plan: break it into to-dos and let the reader keep
@@ -683,23 +684,20 @@ final class _HomeShellState extends State<HomeShell>
     final candidates = <RecommendationCandidate>[
       ...candidatesFromCaptures(
         controller.captures.where(
-          (capture) => planScopesMatch(
-            scopes,
-            capture.contentFolder,
-            capture.contentSubcategory,
-          ),
+          (capture) => planScopeMatches(scopes, [
+            for (final tag in capture.contentTags) tag.value,
+          ]),
         ),
       ),
       for (final group in controller.groups)
-        if (planScopesMatch(
-          scopes,
-          controller.folderForGroup(group.id),
-          controller.subcategoryForGroup(group.id),
-        ))
+        if (planScopeMatches(scopes, [
+          for (final tag in controller.tagsForGroup(group.id)) tag.value,
+        ]))
           candidateFromGroup(
             group,
-            folder: controller.folderForGroup(group.id),
-            subcategory: controller.subcategoryForGroup(group.id),
+            tags: [
+              for (final tag in controller.tagsForGroup(group.id)) tag.value,
+            ],
           ),
     ];
 

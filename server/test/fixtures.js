@@ -28,14 +28,14 @@ export function makeValidAnalysis(overrides = {}) {
     model: MODEL,
     domain: "food",
     contentKind: "recipe",
-    primaryCategory: "recipe",
-    categoryConfidence: 0.98,
-    subcategory: "국·찌개",
-    subcategoryConfidence: 0.95,
-    axes: {
-      kind: [],
-      location: [],
-    },
+    tags: [
+      {
+        observations: ["된장찌개"],
+        value: "국·찌개",
+        confidence: 0.95,
+        evidenceIds: ["e1"],
+      },
+    ],
     completeness: "partial",
     title: {
       value: "된장찌개",

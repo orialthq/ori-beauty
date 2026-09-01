@@ -12,16 +12,6 @@ const CONTENT_KINDS = new Set([
   "place",
   "unknown",
 ]);
-const PRIMARY_CATEGORIES = new Set([
-  "beauty",
-  "health_fitness",
-  "restaurant_cafe",
-  "recipe",
-  "shopping",
-  "travel_place",
-  "life_tip",
-  "other",
-]);
 const COMPLETENESS = new Set([
   "complete",
   "partial",
@@ -38,9 +28,9 @@ const REGIONS = new Set([
   "menu",
   "unknown",
 ]);
-const SUBCATEGORY_MIN_LENGTH = 2;
-const SUBCATEGORY_MAX_LENGTH = 20;
-const SUBCATEGORY_PATTERN =
+const TAG_MIN_LENGTH = 2;
+const TAG_MAX_LENGTH = 20;
+const TAG_PATTERN =
   /^[가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+(?:[ ·ㆍ&/+＋~-][가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+)*$/u;
 const EVIDENCE_REPAIR_WARNING =
   "일부 정보는 확인이 필요해요.";
@@ -49,11 +39,7 @@ const ROOT_KEYS = new Set([
   "model",
   "domain",
   "contentKind",
-  "primaryCategory",
-  "categoryConfidence",
-  "subcategory",
-  "subcategoryConfidence",
-  "axes",
+  "tags",
   "completeness",
   "title",
   "place",
@@ -108,84 +94,74 @@ function assertConfidence(value, path) {
   }
 }
 
-function sanitizeSubcategory(value) {
-  assertString(value, "subcategory");
+function sanitizeTagName(value) {
+  assertString(value, "tag");
   const sanitized = value.normalize("NFKC").trim().replace(/\s+/gu, " ");
   const length = Array.from(sanitized).length;
   if (
-    length < SUBCATEGORY_MIN_LENGTH ||
-    length > SUBCATEGORY_MAX_LENGTH ||
-    !SUBCATEGORY_PATTERN.test(sanitized)
+    length < TAG_MIN_LENGTH ||
+    length > TAG_MAX_LENGTH ||
+    !TAG_PATTERN.test(sanitized)
   ) {
-    throw invalid("subcategory must be a reusable 2-20 character label");
+    throw invalid("tag must be a reusable 2-20 character label");
   }
   return sanitized;
 }
 
-/// What the model is asked for. savedReason is not among them: it lives in the
-/// user's head, so nothing on screen can support it.
-const MODEL_AXES = Object.freeze(["kind", "location"]);
-const AXIS_MAX_LABELS = 8;
-const WEAK_KIND_CONFIDENCE = 0.4;
+const MAX_TAGS = 12;
 
-function sanitizeLabel(label, path, { extraKeys = [] } = {}) {
+function sanitizeTag(tag, path) {
   assertExactKeys(
-    label,
-    new Set(["value", "confidence", "evidenceIds", ...extraKeys]),
+    tag,
+    new Set(["observations", "value", "confidence", "evidenceIds"]),
     path,
   );
-  const value = sanitizeSubcategory(label.value);
-  assertConfidence(label.confidence, `${path}.confidence`);
-  assertStringArray(label.evidenceIds, `${path}.evidenceIds`);
-  return { value, confidence: label.confidence, evidenceIds: label.evidenceIds };
+  const value = sanitizeTagName(tag.value);
+  assertConfidence(tag.confidence, `${path}.confidence`);
+  assertStringArray(tag.evidenceIds, `${path}.evidenceIds`);
+  assertStringArray(tag.observations, `${path}.observations`, {
+    nonEmptyItems: true,
+  });
+  const quotes = tag.observations.map((text) => text.trim()).filter(Boolean);
+  // A tag the model could not observe anything for is a guess wearing a tag's
+  // clothes, so it does not survive.
+  if (quotes.length === 0) return null;
+  return {
+    value,
+    source: "ai",
+    confidence: tag.confidence,
+    evidenceIds: tag.evidenceIds,
+    quotes,
+    citations: [],
+  };
 }
 
-function sanitizeLabelList(labels, path, options) {
-  if (!Array.isArray(labels)) {
-    throw invalid(`${path} is not an array`);
+/// Rebuilds the model's tags into the shape the client stores.
+///
+/// The model reports what it observed; the quotes and the source are derived
+/// here. Keeping the derivation on this side means the same observations always
+/// produce the same tags, whatever the model felt like that run.
+///
+/// A repeated name is dropped rather than rejected: two tags with one name is
+/// the model saying the same thing twice, which costs the reader nothing to
+/// have collapsed. Deciding that two *different* names mean one thing is not
+/// this pass's job.
+function sanitizeTags(value) {
+  if (!Array.isArray(value)) {
+    throw invalid("tags is not an array");
   }
-  if (labels.length > AXIS_MAX_LABELS) {
-    throw invalid(`${path} has too many labels`);
+  if (value.length > MAX_TAGS) {
+    throw invalid("tags has too many entries");
   }
   const seen = new Set();
-  return labels.map((label, index) => {
-    const sanitized = sanitizeLabel(label, `${path}[${index}]`, options);
-    if (seen.has(sanitized.value)) {
-      throw invalid(`${path}[${index}] repeats a label`);
-    }
+  const tags = [];
+  value.forEach((tag, index) => {
+    const sanitized = sanitizeTag(tag, `tags[${index}]`);
+    if (!sanitized || seen.has(sanitized.value)) return;
     seen.add(sanitized.value);
-    return { sanitized, raw: label };
+    tags.push(sanitized);
   });
-}
-
-/// Rebuilds axes into the shape the client stores.
-///
-/// The model reports what it observed; the bands and the empty user axis are
-/// derived here. Keeping the derivation on this side means the same observations
-/// always produce the same labels, whatever the model felt like that run.
-function sanitizeAxes(value) {
-  assertExactKeys(value, new Set(MODEL_AXES), "axes");
-
-  const kind = sanitizeLabelList(value.kind, "axes.kind", {
-    extraKeys: ["observations"],
-  }).map(({ sanitized, raw }) => {
-    assertStringArray(raw.observations, "axes.kind.observations", {
-      nonEmptyItems: true,
-    });
-    const quotes = raw.observations.map((text) => text.trim()).filter(Boolean);
-    // A label the model could not observe anything for is a guess wearing a
-    // label's clothes, so it does not survive.
-    if (quotes.length === 0) return null;
-    return { ...sanitized, quotes };
-  }).filter(Boolean);
-
-  const location = sanitizeLabelList(value.location, "axes.location").map(
-    ({ sanitized }) => ({ ...sanitized, quotes: [] }),
-  );
-  // access is always empty here. The screenshot pass does not report it, and
-  // the client needs every axis present so the two passes produce the same
-  // shape.
-  return { kind, location, access: [], savedReason: [] };
+  return tags;
 }
 
 function assertStringArray(value, path, { nonEmptyItems = true } = {}) {
@@ -209,13 +185,7 @@ export function validateAnalysisResult(result) {
   if (!CONTENT_KINDS.has(result.contentKind)) {
     throw invalid("invalid content kind");
   }
-  if (!PRIMARY_CATEGORIES.has(result.primaryCategory)) {
-    throw invalid("invalid primary category");
-  }
-  assertConfidence(result.categoryConfidence, "categoryConfidence");
-  result.subcategory = sanitizeSubcategory(result.subcategory);
-  assertConfidence(result.subcategoryConfidence, "subcategoryConfidence");
-  result.axes = sanitizeAxes(result.axes);
+  result.tags = sanitizeTags(result.tags);
   if (!COMPLETENESS.has(result.completeness)) {
     throw invalid("invalid completeness");
   }

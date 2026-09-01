@@ -243,9 +243,7 @@ final class PlanController extends ChangeNotifier {
         // Written for that same editor, and for a re-run of the recommendation
         // that should search where the first one did. Also unread today.
         if (draft.scopes.isNotEmpty)
-          'contentScopes': draft.scopes
-              .map((scope) => scope.toJson())
-              .toList(growable: false),
+          'contentScopes': List<String>.from(draft.scopes),
         // Metadata rather than the rule: the scheduler still fires once, at
         // `scheduledAt`. How many days the plan covers is something only a card
         // reads — and the expiry, so a trip does not end on its first evening.

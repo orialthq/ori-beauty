@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../../domain/models.dart';
 import '../../state/app_controller.dart';
 import '../analysis/structured_review_screen.dart';
-import '../common/content_folder_ui.dart';
 import '../product/product_detail_screen.dart';
 
 /// A display-safe, data-backed item in the organized library.
@@ -17,34 +16,11 @@ final class SavedLibraryItem {
     required this.title,
     required this.subtitle,
     required this.searchableText,
-    required this.folder,
-    required this.subcategory,
-    required this.axisLabels,
+    required this.tags,
     required this.updatedAt,
     this.captureId,
     this.groupId,
   });
-
-  /// The kind axis a user override belongs on, kept ahead of what the analysis
-  /// proposed so a correction leads the deck.
-  static Map<ContentAxis, List<String>> _axisLabelsFor(
-    ContentAxes axes,
-    String subcategory,
-  ) {
-    final kind = <String>[
-      if (subcategory.trim().isNotEmpty) subcategory,
-      for (final label in axes[ContentAxis.kind])
-        if (label.value != subcategory) label.value,
-    ];
-    return {
-      ContentAxis.kind: List.unmodifiable(kind),
-      for (final axis in ContentAxis.values)
-        if (axis != ContentAxis.kind)
-          axis: List.unmodifiable(
-            axes[axis].map((label) => label.value).toList(),
-          ),
-    };
-  }
 
   factory SavedLibraryItem.forCapture(CaptureRecord capture) {
     final structured = capture.analysis!.structuredContent!;
@@ -52,22 +28,20 @@ final class SavedLibraryItem {
     final facts = structured.facts
         .map((fact) => '${fact.label} ${fact.value}')
         .join(' ');
+    final tags = capture.contentTags;
     return SavedLibraryItem._(
       id: capture.raw.id,
       title: title == null || title.isEmpty ? '제목 없음' : title,
       subtitle: structured.summary.trim(),
       searchableText: <String>[
-        capture.contentFolder.label,
-        capture.contentSubcategory,
+        for (final tag in tags) tag.value,
         title ?? '',
         structured.summary,
         structured.place?.name ?? '',
         structured.place?.address ?? '',
         facts,
       ].join(' ').toLowerCase(),
-      folder: capture.contentFolder,
-      subcategory: capture.contentSubcategory,
-      axisLabels: _axisLabelsFor(structured.axes, capture.contentSubcategory),
+      tags: tags,
       updatedAt: capture.raw.receivedAt,
       captureId: capture.raw.id,
     );
@@ -77,8 +51,7 @@ final class SavedLibraryItem {
     ProductGroup group,
     AppController controller,
   ) {
-    final subcategory = controller.subcategoryForGroup(group.id);
-    final folder = controller.folderForGroup(group.id);
+    final tags = controller.tagsForGroup(group.id);
     final statements = group.statements
         .map(
           (statement) => '${statement.topic} ${statement.originalExpression}',
@@ -93,18 +66,14 @@ final class SavedLibraryItem {
         group.identity.amount,
       ].where((value) => value.trim().isNotEmpty).join(' · '),
       searchableText: <String>[
-        folder.label,
-        subcategory,
+        for (final tag in tags) tag.value,
         group.identity.brand,
         group.identity.name,
         group.identity.category,
         group.identity.amount,
         statements,
       ].join(' ').toLowerCase(),
-      folder: folder,
-      subcategory: subcategory,
-      // Legacy product groups predate axes and carry only a subcategory.
-      axisLabels: _axisLabelsFor(const ContentAxes.empty(), subcategory),
+      tags: tags,
       updatedAt: group.updatedAt,
       groupId: group.id,
     );
@@ -114,18 +83,16 @@ final class SavedLibraryItem {
   final String title;
   final String subtitle;
   final String searchableText;
-  final ContentFolder folder;
-  final String subcategory;
 
-  /// Labels per axis. A capture may appear on several cards of one axis, which
-  /// is what lets the deck overlap.
-  final Map<ContentAxis, List<String>> axisLabels;
+  /// Every word this is filed under. A saved thing appears under each of them,
+  /// which is what lets one capture sit in 뷰티 and 쇼핑 at once.
+  final List<ContentTag> tags;
 
   final DateTime updatedAt;
   final String? captureId;
   final String? groupId;
 
-  List<String> labelsOn(ContentAxis axis) => axisLabels[axis] ?? const [];
+  bool hasTag(String value) => tags.any((tag) => tag.value == value);
 
   bool matches(String query) => searchableText.contains(query.toLowerCase());
 }

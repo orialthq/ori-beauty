@@ -7,22 +7,11 @@ CaptureRecord _capture({
   String? title,
   String? placeName,
   String? searchArea,
-  ContentFolder folder = ContentFolder.restaurantCafe,
-  String subcategory = '기타',
-  Map<ContentAxis, List<String>> axisLabels = const {},
+  List<String> tags = const ['맛집·카페'],
   DateTime? receivedAt,
   bool analyzed = true,
 }) {
   final saved = receivedAt ?? DateTime.utc(2026, 8, 7);
-  final axes = ContentAxes(
-    labels: {
-      for (final entry in axisLabels.entries)
-        entry.key: [
-          for (final value in entry.value)
-            AxisLabel(value: value, confidence: 0.9, evidenceIds: const ['e1']),
-        ],
-    },
-  );
 
   return CaptureRecord(
     raw: RawCapture(
@@ -48,8 +37,7 @@ CaptureRecord _capture({
       warnings: const [],
     ),
     status: CaptureStatus.organized,
-    folderOverride: folder,
-    subcategoryOverride: subcategory,
+    tagOverride: [for (final tag in tags) ContentTag(value: tag)],
     analysis: AnalysisRun(
       id: '$id-analysis',
       inputId: '$id-input',
@@ -67,11 +55,7 @@ CaptureRecord _capture({
               model: 'gpt-5.6-luna',
               domain: ContentDomain.food,
               contentKind: ContentKind.place,
-              primaryCategory: folder,
-              categoryConfidence: 0.9,
-              subcategory: subcategory,
-              subcategoryConfidence: 0.9,
-              axes: axes,
+              tags: [for (final tag in tags) ContentTag(value: tag)],
               completeness: StructuredCompleteness.complete,
               title: StructuredTitle(
                 value: title,
@@ -129,32 +113,23 @@ void main() {
   test('the area rides along, and stays null when there is none', () {
     final candidates = candidatesFromCaptures([
       _capture(id: 'placed', placeName: '화육계', searchArea: '을지로'),
-      _capture(
-        id: 'recipe',
-        title: '토마토 파스타',
-        folder: ContentFolder.recipe,
-        subcategory: '파스타',
-      ),
+      _capture(id: 'recipe', title: '토마토 파스타', tags: const ['레시피', '파스타']),
     ]);
 
     expect(candidates[0].area, '을지로');
     expect(candidates[1].area, isNull);
   });
 
-  test('labels lead with the subcategory, then the axes, without repeats', () {
+  test('a candidate carries every tag the capture is filed under', () {
     final candidates = candidatesFromCaptures([
       _capture(
         id: 'a',
         placeName: '화육계',
-        subcategory: '닭발',
-        axisLabels: const {
-          ContentAxis.kind: ['닭발', '술집'],
-          ContentAxis.access: ['예약 가능'],
-        },
+        tags: const ['맛집·카페', '닭발', '술집', '예약 가능'],
       ),
     ]);
 
-    expect(candidates.single.labels, ['닭발', '술집', '예약 가능']);
+    expect(candidates.single.tags, ['맛집·카페', '닭발', '술집', '예약 가능']);
   });
 
   test(
@@ -176,7 +151,7 @@ void main() {
           id: 'newest',
           placeName: '화육계',
           searchArea: '을지로3가',
-          subcategory: '닭발',
+          tags: const ['닭발'],
           receivedAt: DateTime.utc(2026, 8, 1),
         ),
       ]);
@@ -190,13 +165,16 @@ void main() {
     },
   );
 
-  test('the same name in a different folder is a different thing', () {
+  test('the same name saved twice is one thing, whatever it is tagged', () {
+    // The folder used to be part of the key, so one shop filed two ways became
+    // two candidates. Tags are not exclusive, so the name is the whole key.
     final candidates = candidatesFromCaptures([
       _capture(id: 'shop', placeName: '연남 소금집'),
-      _capture(id: 'recipe', title: '연남 소금집', folder: ContentFolder.recipe),
+      _capture(id: 'again', placeName: '연남 소금집', tags: const ['레시피']),
     ]);
 
-    expect(candidates.length, 2);
+    expect(candidates.length, 1);
+    expect(candidates.single.saveCount, 2);
   });
 
   test('order is left exactly as it came in', () {
@@ -209,13 +187,12 @@ void main() {
     expect(candidates.map((one) => one.id), ['c', 'a', 'b']);
   });
 
-  test('the wire shape drops what is missing and sends the enum name', () {
+  test('the wire shape drops what is missing', () {
     final candidates = candidatesFromCaptures([
       _capture(
         id: 'recipe',
         title: '토마토 파스타',
-        folder: ContentFolder.recipe,
-        subcategory: '파스타',
+        tags: const ['레시피', '파스타'],
         receivedAt: DateTime.utc(2026, 8, 1),
       ),
     ]);
@@ -223,8 +200,7 @@ void main() {
     expect(candidates.single.toJson(), {
       'id': 'recipe',
       'name': '토마토 파스타',
-      'folder': 'recipe',
-      'labels': ['파스타'],
+      'tags': ['레시피', '파스타'],
       'saveCount': 1,
       'lastSavedAt': '2026-08-01T00:00:00.000Z',
     });
@@ -247,14 +223,12 @@ void main() {
         updatedAt: DateTime.utc(2026, 8, 18),
         colorValue: 0xFF000000,
       ),
-      folder: ContentFolder.beauty,
-      subcategory: '수분크림',
+      tags: const ['뷰티', '수분크림'],
     );
 
     expect(candidate.id, 'group-1');
     expect(candidate.name, '자작나무 수분 크림');
-    expect(candidate.folder, ContentFolder.beauty);
-    expect(candidate.labels, ['수분크림', '라운드랩', '크림', '80ml']);
+    expect(candidate.tags, ['뷰티', '수분크림', '라운드랩', '크림', '80ml']);
     // Two captures filed under it is the reader saving it twice.
     expect(candidate.saveCount, 2);
     expect(candidate.area, isNull);

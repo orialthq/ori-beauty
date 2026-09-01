@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
 import '../../data/plan_recommendation_service.dart';
-import '../../domain/models.dart';
-import '../common/content_folder_ui.dart';
 import '../common/shell_menu_button.dart';
 
 /// Presentation-only lifecycle used by [PlansScreen].
@@ -97,21 +95,6 @@ final class PlanListItem {
       if (earliest == null || due.isBefore(earliest)) earliest = due;
     }
     return earliest ?? DateUtils.dateOnly(start);
-  }
-
-  /// One dot per folder this plan draws on, in the order the folders are shown
-  /// in 정리함 so the same plan always reads the same way.
-  List<ContentFolder> get folders {
-    final seen = <ContentFolder>{};
-    for (final todo in todos) {
-      for (final saved in todo.saved) {
-        if (saved.folder case final folder?) seen.add(folder);
-      }
-    }
-    return <ContentFolder>[
-      for (final folder in ContentFolder.values)
-        if (seen.contains(folder)) folder,
-    ];
   }
 }
 
@@ -528,7 +511,6 @@ final class _PlanCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final folders = plan.folders;
     final nextTodo = plan.nextTodo;
 
     final content = Padding(
@@ -604,7 +586,6 @@ final class _PlanCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (folders.isNotEmpty) _FolderDots(folders: folders),
               ],
             ),
           ],
@@ -757,33 +738,6 @@ final class _ProgressSegments extends StatelessWidget {
           ],
         ],
       ),
-    );
-  }
-}
-
-/// Which of the eight folders this plan reaches into.
-final class _FolderDots extends StatelessWidget {
-  const _FolderDots({required this.folders});
-
-  final List<ContentFolder> folders;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (var index = 0; index < folders.length; index += 1) ...[
-          Container(
-            width: 9,
-            height: 9,
-            decoration: BoxDecoration(
-              color: folders[index].color,
-              shape: BoxShape.circle,
-            ),
-          ),
-          if (index != folders.length - 1) const SizedBox(width: 5),
-        ],
-      ],
     );
   }
 }

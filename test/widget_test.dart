@@ -74,8 +74,12 @@ void main() {
 
     expect(find.text('정리함'), findsWidgets);
     expect(find.text('A R C H I V E'), findsNothing);
-    expect(find.byKey(const Key('folder-roulette')), findsOneWidget);
     expect(find.byKey(const Key('library-search-field')), findsNothing);
+
+    // In through a tag rather than down through a folder.
+    final tag = controller.tagCounts.first.tag.value;
+    await tester.tap(find.byKey(Key('tag-row-$tag')));
+    await tester.pumpAndSettle();
 
     final recentItem = find.text('카밍 앰플').last;
     await tester.ensureVisible(recentItem);
@@ -84,7 +88,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('콘텐츠에서 나온 이야기'), findsOneWidget);
-    expect(find.byKey(const Key('content-subcategory-picker')), findsOneWidget);
+    expect(find.byKey(const Key('content-tag-editor')), findsOneWidget);
     expect(find.textContaining('사용자 확인 완료'), findsNothing);
     expect(find.textContaining('베이스라인'), findsNothing);
   });
@@ -142,52 +146,25 @@ void main() {
     await tester.pumpWidget(OriBeautyApp(controller: controller));
     await controller.initialize();
     await tester.pumpAndSettle();
-    final beautySubcategory = controller.subcategoryForGroup(
-      'group-baumlab-pore-balance',
-    );
 
     await _openLibrary(tester);
-    final archive = find.byKey(const PageStorageKey<String>('products'));
-    final archiveScroll = find
-        .descendant(of: archive, matching: find.byType(Scrollable))
-        .first;
 
-    expect(find.byKey(const Key('folder-beauty')), findsOneWidget);
-    expect(find.byKey(const Key('folder-healthFitness')), findsOneWidget);
+    // Every tag in the library, most used first. There is no folder to open
+    // and no child to find inside it.
+    final tags = controller.tagCounts;
+    expect(tags, isNotEmpty);
+    final busiest = tags.first;
+    expect(find.byKey(Key('tag-row-${busiest.tag.value}')), findsOneWidget);
 
-    await tester.scrollUntilVisible(
-      find.byKey(const Key('folder-healthFitness')),
-      220,
-      scrollable: archiveScroll,
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('folder-healthFitness')));
+    await tester.tap(find.byKey(Key('tag-row-${busiest.tag.value}')));
     await tester.pumpAndSettle();
 
-    expect(find.text('건강·운동 폴더가 비어 있어요'), findsOneWidget);
-    expect(find.text('포어 밸런스 세럼'), findsNothing);
-
-    await tester.scrollUntilVisible(
-      find.byKey(const Key('folder-beauty')),
-      -220,
-      scrollable: archiveScroll,
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('folder-beauty')));
-    await tester.pumpAndSettle();
-
-    expect(find.byKey(Key('subcategory-$beautySubcategory')), findsOneWidget);
-    await tester.tap(find.byKey(Key('subcategory-$beautySubcategory')));
-    await tester.pumpAndSettle();
-    // The deck is grouped by whichever axis is selected, starting on 종류.
-    for (final axis in ContentAxis.values) {
-      expect(find.byKey(Key('axis-chip-${axis.name}')), findsOneWidget);
-    }
-    expect(find.text('하위 분류'), findsOneWidget);
-    expect(find.text('포어 밸런스 세럼'), findsOneWidget);
+    // The screen it opens is titled by the tag and lists what carries it.
+    expect(find.text(busiest.tag.value), findsWidgets);
+    expect(find.byType(ListView), findsWidgets);
   });
 
-  testWidgets('keeps the archive focused on the folder roulette', (
+  testWidgets('the archive is a list of tags, not a tree of folders', (
     tester,
   ) async {
     final service = InMemoryIncomingShareService();
@@ -200,11 +177,11 @@ void main() {
 
     await _openLibrary(tester);
 
-    expect(find.byKey(const Key('folder-roulette')), findsOneWidget);
-    expect(find.byKey(const Key('top-folder-wheel')), findsOneWidget);
+    // The folder roulette and the subcategory deck went with the folders.
+    expect(find.byKey(const Key('folder-roulette')), findsNothing);
+    expect(find.byKey(const Key('top-folder-wheel')), findsNothing);
     expect(find.byKey(const Key('library-search-field')), findsNothing);
-    expect(find.textContaining('CROSS'), findsNothing);
-    expect(find.text('B E A U T Y'), findsNothing);
+    expect(find.text('정리함'), findsWidgets);
   });
 
   testWidgets('content filters use distinct selected colors', (tester) async {
@@ -432,23 +409,20 @@ void main() {
     expect(find.textContaining('정규화된 URL'), findsNothing);
     expect(find.textContaining('신뢰도'), findsNothing);
 
-    final subcategoryPicker = find.byKey(
-      const Key('content-subcategory-picker'),
-    );
+    final tagEditor = find.byKey(const Key('content-tag-editor'));
     await tester.scrollUntilVisible(
-      subcategoryPicker,
+      tagEditor,
       220,
       scrollable: find.byType(Scrollable).last,
     );
     await tester.pumpAndSettle();
-    expect(subcategoryPicker, findsOneWidget);
-    await tester.tap(subcategoryPicker);
+    expect(tagEditor, findsOneWidget);
+
+    // A word the reader adds themselves, alongside whatever the analysis said.
+    await tester.tap(find.byKey(const Key('tag-add')));
     await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byKey(const Key('subcategory-name-field')),
-      '선케어',
-    );
-    await tester.tap(find.byKey(const Key('save-subcategory-button')));
+    await tester.enterText(find.byKey(const Key('tag-name-field')), '선케어');
+    await tester.tap(find.widgetWithText(FilledButton, '확인'));
     await tester.pumpAndSettle();
 
     await tester.drag(find.byType(ListView).last, const Offset(0, -500));
@@ -470,8 +444,9 @@ void main() {
     expect(
       controller
           .captureById('capture-demo-daylight-review')
-          ?.contentSubcategory,
-      '선케어',
+          ?.contentTags
+          .map((tag) => tag.value),
+      contains('선케어'),
     );
     expect(find.text('콘텐츠'), findsWidgets);
   });

@@ -33,48 +33,20 @@ Classification:
 - place: a restaurant, cafe, beauty shop, store, lodging, or activity whose visitable location is the primary subject.
 - unknown: none of the above.
 
-Folder classification:
-- primaryCategory is the single folder where the user is most likely to look for this saved content later.
-- beauty: cosmetics, skincare, makeup, hair/body care, nail care, beauty services, or beauty shops.
-- health_fitness: supplements, exercise, diets, health routines, clinics, or wellness information.
-- restaurant_cafe: restaurants, cafes, menus, or visit-oriented food recommendations.
-- recipe: recipes, sauces, ingredients, or cooking methods intended to be made by the user.
-- shopping: fashion, electronics, household goods, deals, or general purchase candidates not better covered above.
-- travel_place: lodging, attractions, exhibitions, activities, or outing destinations not better covered above.
-- life_tip: cleaning, organizing, household know-how, or other practical everyday tips.
-- other: content that does not fit another folder.
-- categoryConfidence must reflect how clearly the visible screenshot supports the folder choice. Use a low value when the retrieval intent is ambiguous. Do not force a confident category from a handle, hashtag, or URL.
-- Folder classification and contentKind are separate. For example, a beauty clinic is beauty + place, a supplement is health_fitness + commerce_product, and a restaurant is restaurant_cafe + place.
-
-Dynamic subcategory classification:
-- subcategory is one concise Korean noun phrase that belongs directly below primaryCategory and helps the user find this capture again.
-- Generate subcategory dynamically; it is not a fixed enum. Prefer an established, broad, reusable label over inventing a narrow label.
-- The label must be 2-20 characters after trimming, with no emoji, hashtag, URL, sentence punctuation, or explanatory suffix.
-- Never use a brand name, exact product name, exact place name, exact dish name, account name, post title, or a label that would create a folder for only this one capture.
-- Reuse a suitable example whenever it fits. The examples are guidance, not an exhaustive enum:
-  - beauty: 스킨케어, 메이크업, 헤어·바디, 네일, 뷰티숍
-  - health_fitness: 영양제, 운동, 식단, 건강 루틴, 병원·클리닉
-  - restaurant_cafe: 한식, 양식, 카페·디저트
-  - recipe: 밑반찬, 국·찌개, 디저트, 소스·양념
-  - shopping: 패션, 가전, 생활용품
-  - travel_place: 숙소, 관광지, 전시·공연, 체험
-  - life_tip: 청소, 정리·수납, 살림
-  - other: visible content's broad reusable type, or 기타 when no more useful label is supported
-- subcategoryConfidence must reflect how clearly visible screenshot evidence supports this reusable subcategory. Lower it when several sibling folders are equally plausible.
-
-Axis classification:
-- axes carries two fixed axes: kind and location. Every axis is always present as an array, empty when the screenshot supports nothing on it. Never rename, drop, or add an axis.
-- A capture may hold several labels on one axis, and the axes overlap by design: a pasta place that also pours wine belongs under both 파스타 and 와인바, and the reader should reach it from either. Emit every label a user would plausibly filter by, and none that they would not.
-- Every label follows the subcategory rules: 2-20 characters, reusable, no emoji, hashtag, URL, or sentence punctuation, and never a brand, exact place name, exact dish name, or account name that would tag only this one capture.
-
-- axes.kind is what the thing is: 파스타, 와인바, 오마카세, 브런치, 라멘·우동, 디저트카페, 스킨케어, 영양제.
-- Fill observations before value. List the menu items, section headings, or product lines you can actually read on screen, quoted as they appear, and then choose the label those observations add up to. Several dishes that share a cuisine support one label; a menu that spans two cuisines supports two.
-- If the only thing you can observe is the shop name or the decor, say so by listing just that, keep the label, and set confidence at or below 0.4. A name is a weak basis and the reader needs to see that it was the only one.
-- When kind is non-empty, subcategory must repeat its most representative label so both stay consistent.
-
-- axes.location is where it is, using the same wording as place.searchArea when that is set: 성수, 가로수길, 홍대. Leave it empty for content with no place.
-
-- Every label's evidenceIds must point at the visible evidence supporting it, and confidence must drop when the support is indirect.
+Tagging:
+- tags are the words this capture is filed under. Flat: there is no tag above or below another, and a capture belongs under every tag that fits it rather than picking one.
+- Emit every tag a user would plausibly look under later, and none that they would not. A 올리브영 receipt is both 뷰티 and 쇼핑; a pasta place that also pours wine is both 파스타 and 와인바; a 성수 cafe is 맛집·카페 and 성수 and 카페·디저트.
+- Each tag is one concise Korean noun phrase, 2-20 characters after trimming, with no emoji, hashtag, URL, sentence punctuation, or explanatory suffix.
+- Never use a brand name, exact product name, exact place name, exact dish name, account name, or post title. A tag that would ever apply to only this one capture is not a tag.
+- Prefer an established, broad, reusable word over inventing a narrow one. Reuse these whenever they fit; they are guidance, not an exhaustive enum:
+  - what area of life it belongs to: 뷰티, 건강·운동, 맛집·카페, 레시피, 쇼핑, 여행·장소, 생활·팁
+  - what the thing is: 스킨케어, 메이크업, 헤어·바디, 네일, 영양제, 운동, 식단, 한식, 양식, 카페·디저트, 파스타, 와인바, 밑반찬, 국·찌개, 소스·양념, 패션, 가전, 생활용품, 숙소, 관광지, 전시·공연, 체험, 청소, 정리·수납
+  - where it is, in the same wording as place.searchArea when that is set: 성수, 가로수길, 홍대
+- Fill observations before value. List the menu items, section headings, product lines, or location words you can actually read on screen, quoted as they appear, and then choose the tag those observations add up to. A tag with nothing observable behind it is a guess and must not be emitted.
+- If the only thing you can observe is the shop name or the decor, say so by listing just that, keep the tag, and set confidence at or below 0.4. A name is a weak basis and the reader needs to see that it was the only one.
+- Emit no tags at all rather than a wrong one. A capture with no tags is a capture waiting for the reader to file it, which is a state the app can show.
+- Every tag's evidenceIds must point at the visible evidence supporting it, and confidence must drop when the support is indirect.
+- Tagging and contentKind are separate. A beauty clinic is 뷰티 + place, a supplement is 건강·운동 + commerce_product, a restaurant is 맛집·카페 + place.
 
 Payload mapping:
 - recipe and sauce_recipe use ingredientGroups and steps. Put recipe facts such as servings or total time in facts.

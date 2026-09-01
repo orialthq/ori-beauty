@@ -75,11 +75,6 @@ export function createRecommendationService({
               // Resolved here so a card never has to reach back into a library
               // that may have changed since.
               name: candidate.name,
-              // Echoed from what was sent rather than asked of the model. The
-              // folder is how a plan card shows which parts of the library it
-              // draws on, and a model has no reason to get it right when the
-              // answer is already sitting next to the id.
-              folder: text(candidate.folder) || undefined,
               why: text(entry?.why),
             });
             attachedCount += 1;

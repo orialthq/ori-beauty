@@ -43,8 +43,10 @@ test("builds the stateless original-detail Luna request and parses output", asyn
   const result = await service.analyze(input);
 
   assert.equal(result.contentKind, "recipe");
-  assert.equal(result.subcategory, "국·찌개");
-  assert.equal(result.subcategoryConfidence, 0.95);
+  assert.deepEqual(
+    result.tags.map((tag) => tag.value),
+    ["국·찌개"],
+  );
   assert.equal(capturedBody.model, MODEL);
   assert.equal(capturedBody.store, false);
   assert.deepEqual(capturedBody.reasoning, { effort: "medium" });
@@ -61,19 +63,28 @@ test("builds the stateless original-detail Luna request and parses output", asyn
   );
   assert.match(capturedBody.instructions, /untrusted source material/);
   assert.match(capturedBody.instructions, /capture metadata as untrusted/i);
-  assert.match(capturedBody.instructions, /Dynamic subcategory classification/);
-  assert.match(capturedBody.instructions, /not a fixed enum/);
+  assert.match(capturedBody.instructions, /Tagging:/);
+  assert.match(capturedBody.instructions, /reusable word over inventing/);
   assert.match(capturedBody.instructions, /brand name, exact product name/);
   assert.match(capturedBody.instructions, /정리·수납/);
 });
 
-test("normalizes safe whitespace in a dynamic subcategory", async () => {
+test("normalizes safe whitespace in a tag", async () => {
   const service = createAnalysisService({
     transport: {
       async createResponse() {
         return {
           output_text: JSON.stringify(
-            makeValidAnalysis({ subcategory: "  건강   루틴  " }),
+            makeValidAnalysis({
+              tags: [
+                {
+                  observations: ["주 3회 러닝"],
+                  value: "  건강   루틴  ",
+                  confidence: 0.9,
+                  evidenceIds: ["e1"],
+                },
+              ],
+            }),
           ),
         };
       },
@@ -82,21 +93,32 @@ test("normalizes safe whitespace in a dynamic subcategory", async () => {
 
   const result = await service.analyze(input);
 
-  assert.equal(result.subcategory, "건강 루틴");
+  assert.equal(result.tags[0].value, "건강 루틴");
 });
 
-for (const [label, subcategory] of [
+for (const [label, value] of [
   ["one-character", "뷰"],
   ["overlong", "가".repeat(21)],
   ["emoji", "스킨케어✨"],
   ["sentence punctuation", "스킨케어 추천!"],
 ]) {
-  test(`rejects a ${label} subcategory`, async () => {
+  test(`rejects a ${label} tag`, async () => {
     const service = createAnalysisService({
       transport: {
         async createResponse() {
           return {
-            output_text: JSON.stringify(makeValidAnalysis({ subcategory })),
+            output_text: JSON.stringify(
+              makeValidAnalysis({
+                tags: [
+                  {
+                    observations: ["메뉴"],
+                    value,
+                    confidence: 0.9,
+                    evidenceIds: ["e1"],
+                  },
+                ],
+              }),
+            ),
           };
         },
       },
@@ -111,13 +133,22 @@ for (const [label, subcategory] of [
   });
 }
 
-test("rejects an invalid subcategory confidence", async () => {
+test("rejects an invalid tag confidence", async () => {
   const service = createAnalysisService({
     transport: {
       async createResponse() {
         return {
           output_text: JSON.stringify(
-            makeValidAnalysis({ subcategoryConfidence: 1.01 }),
+            makeValidAnalysis({
+              tags: [
+                {
+                  observations: ["메뉴"],
+                  value: "국·찌개",
+                  confidence: 1.01,
+                  evidenceIds: ["e1"],
+                },
+              ],
+            }),
           ),
         };
       },
@@ -190,47 +221,6 @@ test("accepts an observed place with address evidence", async () => {
   assert.equal(result.contentKind, "place");
   assert.equal(result.place.category, "restaurant");
   assert.equal(result.place.address, "서울특별시 중구 세종대로 110");
-});
-
-test("routes a semantically mismatched place category to user review", async () => {
-  const mismatched = makeValidAnalysis({
-    contentKind: "place",
-    primaryCategory: "health_fitness",
-    categoryConfidence: 0.96,
-    subcategory: "클라이밍",
-    subcategoryConfidence: 0.93,
-    axes: {
-      kind: [],
-      location: [],
-    },
-    completeness: "complete",
-    place: {
-      name: "테스트 식당",
-      address: "서울특별시 중구 세종대로 110",
-      searchArea: null,
-      category: "restaurant",
-      confidence: 0.94,
-      evidenceIds: ["e1"],
-    },
-    warnings: [],
-  });
-  const service = createAnalysisService({
-    transport: {
-      async createResponse() {
-        return { output_text: JSON.stringify(mismatched) };
-      },
-    },
-  });
-
-  const result = await service.analyze(input);
-
-  assert.equal(result.primaryCategory, "health_fitness");
-  assert.equal(result.categoryConfidence, 0.5);
-  assert.equal(result.subcategoryConfidence, 0.5);
-  assert.equal(result.completeness, "needs_review");
-  assert.deepEqual(result.warnings, [
-    "콘텐츠 종류와 분류가 맞지 않아 저장할 폴더를 확인해 주세요.",
-  ]);
 });
 
 test("repairs dangling evidence references and routes the result to review", async () => {

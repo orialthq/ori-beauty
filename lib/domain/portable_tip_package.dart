@@ -16,8 +16,7 @@ final class PortableTipPackage {
     required this.exportedAt,
     required this.title,
     required this.summary,
-    required this.category,
-    required this.subcategory,
+    required this.tags,
     required this.facts,
     required this.ingredientGroups,
     required this.steps,
@@ -32,8 +31,7 @@ final class PortableTipPackage {
     required DateTime exportedAt,
     required String title,
     required String summary,
-    required ContentFolder category,
-    required String subcategory,
+    required Iterable<String> tags,
     Iterable<PortableTipFact> facts = const [],
     Iterable<PortableTipIngredientGroup> ingredientGroups = const [],
     Iterable<PortableTipStep> steps = const [],
@@ -97,8 +95,7 @@ final class PortableTipPackage {
             maxRunes: PortableTipLimits.maxSummaryRunes,
           ) ??
           '',
-      category: _portableCategory(category),
-      subcategory: normalizeContentSubcategory(subcategory),
+      tags: List.unmodifiable(_safeTagNames(tags)),
       facts: List.unmodifiable(safeFacts),
       ingredientGroups: List.unmodifiable(safeGroups),
       steps: List.unmodifiable(safeSteps),
@@ -143,8 +140,7 @@ final class PortableTipPackage {
       exportedAt: exportedAt,
       title: title == null || title.isEmpty ? '제목 없음' : title,
       summary: analysis.summary,
-      category: capture.contentFolder,
-      subcategory: capture.contentSubcategory,
+      tags: capture.contentTags.map((tag) => tag.value),
       facts: selectedFacts.map(PortableTipFact.fromAnalysisFact),
       ingredientGroups: selectedIngredientGroups.map(
         PortableTipIngredientGroup.fromIngredientGroup,
@@ -167,8 +163,7 @@ final class PortableTipPackage {
     required String packageId,
     required DateTime exportedAt,
     required ProductGroup group,
-    required ContentFolder category,
-    required String subcategory,
+    required Iterable<String> tags,
     Iterable<ContentStatement> selectedStatements = const [],
     String? message,
   }) {
@@ -183,8 +178,7 @@ final class PortableTipPackage {
       exportedAt: exportedAt,
       title: identity.name,
       summary: summary,
-      category: category,
-      subcategory: subcategory,
+      tags: tags,
       notes: selectedStatements.map(
         (statement) => statement.topic.trim().isEmpty
             ? statement.originalExpression
@@ -198,8 +192,13 @@ final class PortableTipPackage {
   final DateTime exportedAt;
   final String title;
   final String summary;
-  final ContentFolder category;
-  final String subcategory;
+
+  /// What the sender had this filed under, by name.
+  ///
+  /// Names only: the receiver's library keeps its own record of where a tag
+  /// came from, and a tag arriving from someone else has no evidence in *this*
+  /// reader's captures to point at.
+  final List<String> tags;
   final List<PortableTipFact> facts;
   final List<PortableTipIngredientGroup> ingredientGroups;
   final List<PortableTipStep> steps;
@@ -526,6 +525,7 @@ abstract final class PortableTipLimits {
   static const maxPackageBytes = 64 * 1024;
   static const maxEpochMilliseconds = 8640000000000000;
   static const maxTitleRunes = 120;
+  static const maxTags = 12;
   static const maxSummaryRunes = 500;
   static const maxMessageRunes = 280;
   static const maxLabelRunes = 60;
@@ -557,7 +557,11 @@ final class UnsupportedPortableTipVersionException extends FormatException {
 /// treat private/raw payloads as v1 tips.
 abstract final class PortableTipPackageCodec {
   static const format = 'com.orialthq.trunon.portable-tip';
-  static const schemaVersion = 1;
+  static const schemaVersion = 2;
+
+  /// Version 1 filed a tip under one category and one subcategory. Those are
+  /// two tags, so a tip a friend sent before this still opens.
+  static const supportedVersions = {1, 2};
   static const fileExtension = 'trunon';
   static const mimeType = 'application/vnd.orialthq.trunon.tip+json';
   static const uniformTypeIdentifier = 'com.orialthq.trunon.tip';
@@ -635,8 +639,7 @@ abstract final class PortableTipPackageCodec {
     'tip': {
       'title': package.title,
       'summary': package.summary,
-      'category': _categoryWireName(package.category),
-      'subcategory': package.subcategory,
+      'tags': package.tags,
       'details': {
         'facts': [
           for (final fact in package.facts)
@@ -691,8 +694,9 @@ abstract final class PortableTipPackageCodec {
     if (json['format'] != format) {
       throw const FormatException('Unsupported portable tip format.');
     }
-    if (json['schemaVersion'] != schemaVersion) {
-      throw UnsupportedPortableTipVersionException(json['schemaVersion']);
+    final version = json['schemaVersion'];
+    if (!supportedVersions.contains(version)) {
+      throw UnsupportedPortableTipVersionException(version);
     }
     final exportedAtEpochMs = json['exportedAtEpochMs'];
     if (exportedAtEpochMs is! int ||
@@ -701,11 +705,10 @@ abstract final class PortableTipPackageCodec {
       throw const FormatException('Portable tip timestamp is invalid.');
     }
     final tip = _requiredMap(json['tip'], 'tip');
-    _requireExactKeys(tip, const {
+    _requireExactKeys(tip, {
       'title',
       'summary',
-      'category',
-      'subcategory',
+      if (version == 1) ...{'category', 'subcategory'} else 'tags',
       'details',
       'place',
       'source',
@@ -721,7 +724,12 @@ abstract final class PortableTipPackageCodec {
     final packageId = _stringValue(json['packageId'], 'packageId');
     final title = _stringValue(tip['title'], 'title');
     final summary = _stringValue(tip['summary'], 'summary');
-    final subcategory = _stringValue(tip['subcategory'], 'subcategory');
+    final tags = version == 1
+        ? <String>[
+            ?_categoryTagName(tip['category']),
+            _stringValue(tip['subcategory'], 'subcategory'),
+          ]
+        : _stringList(tip['tags'], 'tags');
 
     return PortableTipPackage.create(
       packageId: packageId,
@@ -731,8 +739,7 @@ abstract final class PortableTipPackageCodec {
       ),
       title: title,
       summary: summary,
-      category: _categoryFromWireName(tip['category']),
-      subcategory: subcategory,
+      tags: tags,
       facts: _mapList(details['facts'], 'facts').map(_factFromJson),
       ingredientGroups: _mapList(
         details['ingredientGroups'],
@@ -941,38 +948,31 @@ List<String> _sanitizedUniqueTextList(
   return result;
 }
 
-ContentFolder _portableCategory(ContentFolder value) {
-  return value == ContentFolder.needsClassification
-      ? ContentFolder.other
-      : value;
+/// Tag names, trimmed to what a chip can carry and to what the format allows.
+List<String> _safeTagNames(Iterable<String> values) {
+  final seen = <String>{};
+  final safe = <String>[];
+  for (final value in values) {
+    final normalized = normalizeTagName(value);
+    if (!isValidTagName(normalized) || !seen.add(normalized)) continue;
+    if (safe.length >= PortableTipLimits.maxTags) break;
+    safe.add(normalized);
+  }
+  return safe;
 }
 
-String _categoryWireName(ContentFolder value) {
-  return switch (_portableCategory(value)) {
-    ContentFolder.beauty => 'beauty',
-    ContentFolder.healthFitness => 'health_fitness',
-    ContentFolder.restaurantCafe => 'restaurant_cafe',
-    ContentFolder.recipe => 'recipe',
-    ContentFolder.shopping => 'shopping',
-    ContentFolder.travelPlace => 'travel_place',
-    ContentFolder.lifeTip => 'life_tip',
-    ContentFolder.other || ContentFolder.needsClassification => 'other',
-  };
-}
-
-ContentFolder _categoryFromWireName(Object? value) {
-  return switch (value) {
-    'beauty' => ContentFolder.beauty,
-    'health_fitness' => ContentFolder.healthFitness,
-    'restaurant_cafe' => ContentFolder.restaurantCafe,
-    'recipe' => ContentFolder.recipe,
-    'shopping' => ContentFolder.shopping,
-    'travel_place' => ContentFolder.travelPlace,
-    'life_tip' => ContentFolder.lifeTip,
-    'other' => ContentFolder.other,
-    _ => throw const FormatException('Portable tip category is invalid.'),
-  };
-}
+/// The Korean name of a version 1 category. `other` carried no meaning worth
+/// sending on, and neither did a tip the sender never placed.
+String? _categoryTagName(Object? wireName) => switch (wireName) {
+  'beauty' => '뷰티',
+  'health_fitness' => '건강·운동',
+  'restaurant_cafe' => '맛집·카페',
+  'recipe' => '레시피',
+  'shopping' => '쇼핑',
+  'travel_place' => '여행·장소',
+  'life_tip' => '생활·팁',
+  _ => null,
+};
 
 Map<String, Object?> _requiredMap(Object? value, String field) {
   if (value is Map<String, Object?>) {

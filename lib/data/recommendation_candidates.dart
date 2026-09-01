@@ -9,8 +9,7 @@ final class RecommendationCandidate {
   const RecommendationCandidate({
     required this.id,
     required this.name,
-    required this.folder,
-    required this.labels,
+    required this.tags,
     required this.saveCount,
     this.area,
     this.lastSavedAt,
@@ -22,14 +21,13 @@ final class RecommendationCandidate {
   final String id;
 
   final String name;
-  final ContentFolder folder;
 
   /// The words a person would type next to the name in a map search: `성수`,
   /// `을지로`. Null for anything that does not sit anywhere — a recipe, a tip.
   final String? area;
 
-  /// Subcategory first, then the axis labels. `닭발`, `술집`, `예약 가능`.
-  final List<String> labels;
+  /// Every word this is filed under. `맛집·카페`, `닭발`, `을지로`, `예약 가능`.
+  final List<String> tags;
 
   /// How many captures of the same thing collapsed into this one.
   final int saveCount;
@@ -39,11 +37,8 @@ final class RecommendationCandidate {
   Map<String, Object?> toJson() => <String, Object?>{
     'id': id,
     'name': name,
-    // The enum name rather than its Korean label, because this is a wire value.
-    // Screen copy should be free to change without moving what the model reads.
-    'folder': folder.name,
     if (area != null) 'area': area,
-    if (labels.isNotEmpty) 'labels': labels,
+    if (tags.isNotEmpty) 'tags': tags,
     'saveCount': saveCount,
     if (lastSavedAt != null)
       'lastSavedAt': lastSavedAt!.toUtc().toIso8601String(),
@@ -52,13 +47,12 @@ final class RecommendationCandidate {
 
 /// A product the reader confirmed and filed, as a candidate.
 ///
-/// Groups predate the axis work and carry an identity rather than a place: a
+/// Groups predate the tag work and carry an identity rather than a place: a
 /// brand, a name, an amount. They are half of what the 정리함 tab shows, and a
 /// plan like "올리브영에서 뭐 사지" is about exactly this half.
 RecommendationCandidate candidateFromGroup(
   ProductGroup group, {
-  required ContentFolder folder,
-  required String subcategory,
+  required List<String> tags,
   int maxLabels = 8,
 }) {
   final labels = <String>[];
@@ -69,7 +63,9 @@ RecommendationCandidate candidateFromGroup(
     labels.add(label);
   }
 
-  add(subcategory);
+  for (final tag in tags) {
+    add(tag);
+  }
   add(group.identity.brand);
   add(group.identity.category);
   add(group.identity.amount);
@@ -77,8 +73,7 @@ RecommendationCandidate candidateFromGroup(
   return RecommendationCandidate(
     id: group.id,
     name: group.identity.name,
-    folder: folder,
-    labels: List<String>.unmodifiable(labels),
+    tags: List<String>.unmodifiable(labels),
     // Every capture filed under this product is the reader saving it again.
     saveCount: group.sourceCaptureIds.isEmpty
         ? 1
@@ -112,8 +107,7 @@ List<RecommendationCandidate> candidatesFromCaptures(
     final name = _nameOf(structured);
     if (name == null) continue;
 
-    final folder = capture.contentFolder;
-    final key = '${folder.name}|${_collapse(name)}';
+    final key = _collapse(name);
 
     final pending = byKey[key];
     if (pending == null) {
@@ -121,9 +115,8 @@ List<RecommendationCandidate> candidatesFromCaptures(
       byKey[key] = _Pending(
         id: capture.raw.id,
         name: name,
-        folder: folder,
         area: _areaOf(structured),
-        labels: _labelsOf(structured, capture.contentSubcategory, maxLabels),
+        tags: _tagsOf(capture, maxLabels),
         saveCount: 1,
         lastSavedAt: capture.raw.receivedAt,
       );
@@ -138,7 +131,7 @@ List<RecommendationCandidate> candidatesFromCaptures(
         ..id = capture.raw.id
         ..name = name
         ..area = _areaOf(structured) ?? pending.area
-        ..labels = _labelsOf(structured, capture.contentSubcategory, maxLabels)
+        ..tags = _tagsOf(capture, maxLabels)
         ..lastSavedAt = capture.raw.receivedAt;
     }
   }
@@ -163,11 +156,7 @@ String? _areaOf(StructuredContentAnalysis structured) {
   return area == null || area.isEmpty ? null : area;
 }
 
-List<String> _labelsOf(
-  StructuredContentAnalysis structured,
-  String subcategory,
-  int maxLabels,
-) {
+List<String> _tagsOf(CaptureRecord capture, int maxLabels) {
   final labels = <String>[];
   void add(String? value) {
     final label = value?.trim();
@@ -177,11 +166,8 @@ List<String> _labelsOf(
     labels.add(label);
   }
 
-  add(subcategory);
-  for (final axis in ContentAxis.values) {
-    for (final label in structured.axes[axis]) {
-      add(label.value);
-    }
+  for (final tag in capture.contentTags) {
+    add(tag.value);
   }
   return List<String>.unmodifiable(labels);
 }
@@ -195,27 +181,24 @@ final class _Pending {
   _Pending({
     required this.id,
     required this.name,
-    required this.folder,
     required this.area,
-    required this.labels,
+    required this.tags,
     required this.saveCount,
     required this.lastSavedAt,
   });
 
   String id;
   String name;
-  ContentFolder folder;
   String? area;
-  List<String> labels;
+  List<String> tags;
   int saveCount;
   DateTime lastSavedAt;
 
   RecommendationCandidate toCandidate() => RecommendationCandidate(
     id: id,
     name: name,
-    folder: folder,
     area: area,
-    labels: labels,
+    tags: tags,
     saveCount: saveCount,
     lastSavedAt: lastSavedAt,
   );

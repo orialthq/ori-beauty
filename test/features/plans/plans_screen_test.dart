@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ori_beauty/core/app_theme.dart';
 import 'package:ori_beauty/data/plan_recommendation_service.dart';
-import 'package:ori_beauty/domain/models.dart';
 import 'package:ori_beauty/features/plans/plans_screen.dart';
 
 /// Pinned so a countdown does not change under the test overnight.
@@ -81,18 +80,8 @@ void main() {
             '먹을 곳 정하기',
             daysBefore: 5,
             saved: const <PlanTodoSavedItem>[
-              PlanTodoSavedItem(
-                id: 'cap-1',
-                name: '다낭 미케비치 호텔',
-                why: '',
-                folder: ContentFolder.travelPlace,
-              ),
-              PlanTodoSavedItem(
-                id: 'cap-2',
-                name: '반쎄오 맛집',
-                why: '',
-                folder: ContentFolder.restaurantCafe,
-              ),
+              PlanTodoSavedItem(id: 'cap-1', name: '다낭 미케비치 호텔', why: ''),
+              PlanTodoSavedItem(id: 'cap-2', name: '반쎄오 맛집', why: ''),
             ],
           ),
         ],

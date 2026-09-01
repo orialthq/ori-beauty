@@ -7,7 +7,7 @@ import 'package:ori_beauty/domain/models.dart';
 /// Feeds a verbatim server reply through the client parser.
 ///
 /// The two ends of this contract live in different languages, so a field the
-/// server renamed shows up here as a silently empty axis rather than a failure.
+/// server renamed shows up here as silently missing tags rather than a failure.
 /// This test is the tripwire for that.
 const _serverReply = r'''
 {
@@ -51,13 +51,13 @@ void main() {
     final service = RemotePlaceEnrichmentService(
       baseUrl: 'http://127.0.0.1:${server.port}',
     );
-    final axes = await service.enrich(name: '화육계', searchArea: '을지로');
+    final tags = await service.enrich(name: '화육계', searchArea: '을지로');
 
-    expect(axes[ContentAxis.access].map((label) => label.value), [
-      '예약 가능',
-      '웨이팅 있음',
-    ]);
-    expect(axes[ContentAxis.access].first.source, AxisLabelSource.web);
-    expect(axes[ContentAxis.access].first.citations, isNotEmpty);
+    // Both fields the server answers with land in one flat list. Which of them
+    // a tag arrived in is not something the library keeps any more.
+    expect(tags.map((tag) => tag.value), ['닭발', '예약 가능', '웨이팅 있음']);
+    expect(tags.every((tag) => tag.source == TagSource.web), isTrue);
+    expect(tags.first.citations, isNotEmpty);
+    expect(tags.first.quotes, ['닭발 전문점']);
   });
 }

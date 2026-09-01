@@ -33,7 +33,7 @@ test("health endpoint exposes only non-sensitive service metadata", async (t) =>
   assert.deepEqual(body, {
     status: "ok",
     service: "ori-capture-analysis",
-    schemaVersion: "1.5",
+    schemaVersion: "2.0",
     model: "gpt-5.6-luna",
     enrichmentModel: "gpt-5.6-luna",
   });
