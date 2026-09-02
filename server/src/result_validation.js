@@ -1,5 +1,7 @@
+import { FIELD_VALUES } from "./analysis_schema.js";
 import { MODEL, SCHEMA_VERSION } from "./constants.js";
 import { OpenAITransportError } from "./errors.js";
+import { normalizeTagValue, tagKey } from "./tag_key.js";
 
 const DOMAINS = new Set(["beauty", "food", "unknown"]);
 const CONTENT_KINDS = new Set([
@@ -28,18 +30,16 @@ const REGIONS = new Set([
   "menu",
   "unknown",
 ]);
-const TAG_MIN_LENGTH = 2;
-const TAG_MAX_LENGTH = 20;
-const TAG_PATTERN =
-  /^[가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+(?:[ ·ㆍ&/+＋~-][가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+)*$/u;
 const EVIDENCE_REPAIR_WARNING =
   "일부 정보는 확인이 필요해요.";
-const ROOT_KEYS = new Set([
+/// What the model answers with. The client-facing object differs in exactly one
+/// key: `filing` (four slots) goes in, `tags` (one flat list) comes out.
+const MODEL_ROOT_KEYS = new Set([
   "schemaVersion",
   "model",
   "domain",
   "contentKind",
-  "tags",
+  "filing",
   "completeness",
   "title",
   "place",
@@ -94,29 +94,39 @@ function assertConfidence(value, path) {
   }
 }
 
-function sanitizeTagName(value) {
+function sanitizeTagName(value, closed = null) {
   assertString(value, "tag");
-  const sanitized = value.normalize("NFKC").trim().replace(/\s+/gu, " ");
-  const length = Array.from(sanitized).length;
-  if (
-    length < TAG_MIN_LENGTH ||
-    length > TAG_MAX_LENGTH ||
-    !TAG_PATTERN.test(sanitized)
-  ) {
+  const sanitized = normalizeTagValue(value);
+  if (sanitized === null) {
     throw invalid("tag must be a reusable 2-20 character label");
+  }
+  // A closed slot answered with a word outside its list is the model ignoring
+  // the contract, not a new word worth keeping.
+  if (closed && !closed.has(sanitized)) {
+    throw invalid("tag is not in the closed list for its slot");
   }
   return sanitized;
 }
 
 const MAX_TAGS = 12;
 
-function sanitizeTag(tag, path) {
+/// The four generation slots, in the order their tags are flattened. Each is
+/// the question the model was asked, the facet the tag carries in storage, the
+/// runaway ceiling for that slot, and whether its words are a closed list.
+const FILING_SLOTS = Object.freeze([
+  { slot: "fields", facet: "field", maxItems: 3, closed: new Set(FIELD_VALUES) },
+  { slot: "areas", facet: "area", maxItems: 3, closed: null },
+  { slot: "kinds", facet: "kind", maxItems: 4, closed: null },
+  { slot: "traits", facet: "trait", maxItems: 4, closed: null },
+]);
+
+function sanitizeTag(tag, path, { facet, closed }) {
   assertExactKeys(
     tag,
     new Set(["observations", "value", "confidence", "evidenceIds"]),
     path,
   );
-  const value = sanitizeTagName(tag.value);
+  const value = sanitizeTagName(tag.value, closed);
   assertConfidence(tag.confidence, `${path}.confidence`);
   assertStringArray(tag.evidenceIds, `${path}.evidenceIds`);
   assertStringArray(tag.observations, `${path}.observations`, {
@@ -128,6 +138,7 @@ function sanitizeTag(tag, path) {
   if (quotes.length === 0) return null;
   return {
     value,
+    facet,
     source: "ai",
     confidence: tag.confidence,
     evidenceIds: tag.evidenceIds,
@@ -136,31 +147,70 @@ function sanitizeTag(tag, path) {
   };
 }
 
-/// Rebuilds the model's tags into the shape the client stores.
+/// Rebuilds the model's four filing slots into the one flat list the client
+/// stores.
 ///
-/// The model reports what it observed; the quotes and the source are derived
-/// here. Keeping the derivation on this side means the same observations always
-/// produce the same tags, whatever the model felt like that run.
+/// The model reports what it observed; the quotes, the source, and the facet
+/// are derived here. Keeping the derivation on this side means the same
+/// observations always produce the same tags, whatever the model felt like
+/// that run.
 ///
-/// A repeated name is dropped rather than rejected: two tags with one name is
-/// the model saying the same thing twice, which costs the reader nothing to
-/// have collapsed. Deciding that two *different* names mean one thing is not
-/// this pass's job.
-function sanitizeTags(value) {
-  if (!Array.isArray(value)) {
-    throw invalid("tags is not an array");
-  }
-  if (value.length > MAX_TAGS) {
-    throw invalid("tags has too many entries");
-  }
+/// A repeated word is dropped rather than rejected, and "repeated" is judged by
+/// `tagKey`, not by the exact string: 스킨케어 in kinds and 스킨 케어 in traits
+/// is the model saying the same thing twice, which costs the reader nothing to
+/// have collapsed. The first slot to use a word keeps it, so a word that fits
+/// both a field and a kind is filed as the field. Deciding that two
+/// *different* words mean one thing is not this pass's job.
+function sanitizeFiling(filing) {
+  assertExactKeys(
+    filing,
+    new Set(FILING_SLOTS.map((entry) => entry.slot)),
+    "filing",
+  );
   const seen = new Set();
   const tags = [];
-  value.forEach((tag, index) => {
-    const sanitized = sanitizeTag(tag, `tags[${index}]`);
-    if (!sanitized || seen.has(sanitized.value)) return;
-    seen.add(sanitized.value);
-    tags.push(sanitized);
-  });
+  for (const { slot, facet, maxItems, closed } of FILING_SLOTS) {
+    const list = filing[slot];
+    if (!Array.isArray(list)) {
+      throw invalid(`filing.${slot} is not an array`);
+    }
+    if (list.length > maxItems) {
+      throw invalid(`filing.${slot} has too many entries`);
+    }
+    list.forEach((tag, index) => {
+      const sanitized = sanitizeTag(tag, `filing.${slot}[${index}]`, {
+        facet,
+        closed,
+      });
+      if (!sanitized) return;
+      const key = tagKey(sanitized.value);
+      if (seen.has(key)) return;
+      seen.add(key);
+      tags.push(sanitized);
+    });
+  }
+  // The slots add up to more than one card can show. The tail is the least
+  // essential slot's least essential words, so it goes rather than the answer.
+  return tags.slice(0, MAX_TAGS);
+}
+
+/// The library's spelling wins over the model's.
+///
+/// The model was shown the reader's words and asked to reuse them, but a prompt
+/// is a request, not a guarantee. When it answers with a spelling variant of a
+/// word the reader already has, the reader should not get a second shelf for
+/// it. Same key, same tag; the value is rewritten to the one already on file.
+function adoptVocabularySpelling(tags, vocabulary) {
+  if (!Array.isArray(vocabulary) || vocabulary.length === 0) return tags;
+  const spellingByKey = new Map();
+  for (const entry of vocabulary) {
+    const key = tagKey(entry.value);
+    if (!spellingByKey.has(key)) spellingByKey.set(key, entry.value);
+  }
+  for (const tag of tags) {
+    const spelling = spellingByKey.get(tagKey(tag.value));
+    if (spelling !== undefined) tag.value = spelling;
+  }
   return tags;
 }
 
@@ -173,8 +223,8 @@ function assertStringArray(value, path, { nonEmptyItems = true } = {}) {
   );
 }
 
-export function validateAnalysisResult(result) {
-  assertExactKeys(result, ROOT_KEYS, "result");
+export function validateAnalysisResult(result, { vocabulary = [] } = {}) {
+  assertExactKeys(result, MODEL_ROOT_KEYS, "result");
 
   if (result.schemaVersion !== SCHEMA_VERSION || result.model !== MODEL) {
     throw invalid("schema version or model mismatch");
@@ -185,7 +235,14 @@ export function validateAnalysisResult(result) {
   if (!CONTENT_KINDS.has(result.contentKind)) {
     throw invalid("invalid content kind");
   }
-  result.tags = sanitizeTags(result.tags);
+  const tags = adoptVocabularySpelling(sanitizeFiling(result.filing), vocabulary);
+  // Rebuilt rather than patched so `tags` sits where `filing` was: the client
+  // object keeps the key order it had in 2.0.
+  result = Object.fromEntries(
+    Object.entries(result).map(([key, value]) =>
+      key === "filing" ? ["tags", tags] : [key, value],
+    ),
+  );
   if (!COMPLETENESS.has(result.completeness)) {
     throw invalid("invalid completeness");
   }
@@ -280,6 +337,12 @@ export function validateAnalysisResult(result) {
   const referenceLists = [
     ["title.evidenceIds", result.title.evidenceIds],
     ["place.evidenceIds", result.place.evidenceIds],
+    // A tag citing evidence that does not exist is a tag with no visible basis,
+    // which is exactly what the reader is meant to be able to check.
+    ...result.tags.map((tag, index) => [
+      `tags[${index}].evidenceIds`,
+      tag.evidenceIds,
+    ]),
   ];
 
   if (!Array.isArray(result.ingredientGroups)) {

@@ -1,3 +1,5 @@
+import 'tag_key.dart';
+
 enum CaptureOrigin { androidShare, manual, portableTip, demo }
 
 enum CaptureStatus {
@@ -33,6 +35,21 @@ enum ContentDomain { beauty, food, unknown }
 /// typed never can.
 enum TagSource { ai, user, web }
 
+/// Which slot the analysis filled a tag from.
+///
+/// Not a folder and not a level: a capture is still filed flat under every
+/// word that fits. The slot is how the analysis was asked — "where is it",
+/// "what is it", "what field of life", "what property" — so that the kinds of
+/// word almost every capture has stop being forgotten on some captures and
+/// remembered on others. A reader's own tag has no slot, and nothing needs it
+/// to have one.
+enum TagFacet { field, area, kind, trait }
+
+/// One word the reader's library already uses, and how many things sit under
+/// it. What the analysis is shown so it reuses the reader's words instead of
+/// coining its own.
+typedef TagVocabularyEntry = ({String value, int count});
+
 // `~` is allowed so a price band reads as 2~5만원 rather than 25만원.
 final _tagNamePattern = RegExp(
   r'^[가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+(?:[ ·ㆍ&/+~\-][가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+)*$',
@@ -66,10 +83,10 @@ bool isValidTagName(String value) {
 /// 맛집·카페, 국밥, 을지로 and 웨이팅 side by side, where the folder it used to
 /// live in made it pick one of them and drop the rest.
 ///
-/// Two tags are the same tag when their names match exactly. Deciding that
-/// `스킨케어` and `스킨 케어` are one thing needs a corpus to measure, which the
-/// library does not have yet; until then a near-duplicate is left standing
-/// where it can be counted.
+/// Two tags are the same tag when they are one word written two ways — see
+/// [tagKey]. `스킨케어` and `스킨 케어` collapse; `카페` and `커피숍` do not,
+/// because that is a judgement rather than a spelling, and judgement is what
+/// the analysis (shown the reader's existing words) and the reader are for.
 final class ContentTag {
   const ContentTag({
     required this.value,
@@ -78,6 +95,7 @@ final class ContentTag {
     this.evidenceIds = const [],
     this.quotes = const [],
     this.citations = const [],
+    this.facet,
   });
 
   factory ContentTag.fromJson(Map<String, Object?> json, String field) {
@@ -91,6 +109,7 @@ final class ContentTag {
         'evidenceIds',
         'quotes',
         'citations',
+        'facet',
       },
     );
     final value = _requiredString(json['value'], '$field.value');
@@ -103,6 +122,13 @@ final class ContentTag {
         'user' => TagSource.user,
         'web' => TagSource.web,
         _ => TagSource.ai,
+      },
+      facet: switch (json['facet']) {
+        'field' => TagFacet.field,
+        'area' => TagFacet.area,
+        'kind' => TagFacet.kind,
+        'trait' => TagFacet.trait,
+        _ => null,
       },
       confidence: json['confidence'] == null
           ? 1
@@ -131,6 +157,23 @@ final class ContentTag {
   /// backed by [evidenceIds] instead.
   final List<String> citations;
 
+  /// The slot the analysis filled this from, or null for a tag that did not
+  /// come from the analysis — the reader's own, a web finding, or one from
+  /// before slots existed.
+  final TagFacet? facet;
+
+  /// The word this tag is, whichever way it happens to be spelled.
+  String get key => tagKey(value);
+
+  /// An analysis tag with little behind it.
+  ///
+  /// The analysis is told to put a tag it could only support with the shop's
+  /// name or the decor at 0.4 or under, so this is the line between "read off
+  /// the screen" and "guessed from the sign". Such a tag is kept — a guess the
+  /// reader can see is worth more than a blank — but it is shown as one, and
+  /// the reader is the one who decides whether it stays.
+  bool get isWeak => source == TagSource.ai && confidence < 0.5;
+
   ContentTag copyWith({String? value, TagSource? source}) => ContentTag(
     value: value ?? this.value,
     source: source ?? this.source,
@@ -138,6 +181,7 @@ final class ContentTag {
     evidenceIds: evidenceIds,
     quotes: quotes,
     citations: citations,
+    facet: facet,
   );
 
   Map<String, Object?> toJson() => {
@@ -147,20 +191,42 @@ final class ContentTag {
     'evidenceIds': evidenceIds,
     'quotes': quotes,
     'citations': citations,
+    if (facet != null) 'facet': facet!.name,
   };
 }
 
-/// [tags] with duplicates dropped, keeping the first of each name.
+/// [tags] with duplicates dropped, keeping the first of each word.
 ///
-/// First wins because what the screenshot showed comes before what a later pass
-/// added, and because a reader's own tag is placed ahead of the rest.
+/// Compared by [tagKey], so two spellings of one word are one tag and the
+/// spelling that came first is the one kept. First wins because what the
+/// screenshot showed comes before what a later pass added, and because a
+/// reader's own tag is placed ahead of the rest.
 List<ContentTag> dedupedTags(Iterable<ContentTag> tags) {
   final seen = <String>{};
   return List<ContentTag>.unmodifiable([
     for (final tag in tags)
-      if (seen.add(tag.value)) tag,
+      if (seen.add(tag.key)) tag,
   ]);
 }
+
+/// [tags] written the way [spellings] already writes them.
+///
+/// The library's spelling of a word beats whatever spelling just arrived —
+/// from the analysis, the web, or the reader's own fingers — so that a word is
+/// one tag however it came in. [spellings] maps [tagKey] to the spelling in
+/// use; a word the library has never seen keeps the spelling it arrived with.
+/// Only the spelling changes: the source, the confidence and the evidence are
+/// still those of the tag that arrived.
+List<ContentTag> adoptedSpellings(
+  Iterable<ContentTag> tags,
+  Map<String, String> spellings,
+) => [
+  for (final tag in tags)
+    switch (spellings[tag.key]) {
+      final known? when known != tag.value => tag.copyWith(value: known),
+      _ => tag,
+    },
+];
 
 enum ContentKind {
   beautyProduct,
@@ -1012,6 +1078,7 @@ final class StructuredContentAnalysis {
           '1.4',
           '1.5',
           '2.0',
+          '2.1',
         }.contains(schemaVersion) ||
         !const {'gpt-5.6-luna', 'portable-tip-v1'}.contains(model)) {
       throw const FormatException(
@@ -1080,12 +1147,19 @@ final class StructuredContentAnalysis {
   /// tag whose name is already present is dropped: the same word must never
   /// appear twice on one capture just because two sources agreed.
   StructuredContentAnalysis withTags(List<ContentTag> found) =>
+      replacingTags(dedupedTags([...tags, ...found]));
+
+  /// A copy carrying exactly [replacement] as its tags.
+  ///
+  /// For spelling the analysis's own tags the library's way without touching
+  /// anything else it read.
+  StructuredContentAnalysis replacingTags(List<ContentTag> replacement) =>
       StructuredContentAnalysis(
         schemaVersion: schemaVersion,
         model: model,
         domain: domain,
         contentKind: contentKind,
-        tags: dedupedTags([...tags, ...found]),
+        tags: dedupedTags(replacement),
         completeness: completeness,
         title: title,
         place: place,
@@ -1351,7 +1425,7 @@ String? _folderTagName(Object? wireName) => switch (wireName) {
   'restaurant_cafe' => '맛집·카페',
   'recipe' => '레시피',
   'shopping' => '쇼핑',
-  'travel_place' => '여행·장소',
+  'travel_place' => '장소',
   'life_tip' => '생활·팁',
   'other' => '기타',
   _ => null,

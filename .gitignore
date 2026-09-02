@@ -54,3 +54,10 @@ app.*.map.json
 
 # Local-only seed for looking at 정리함 with real captures in it. Never commit.
 lib/data/visual_seed.dart
+
+# The screenshots that seed reads. Real captures off a real phone, and the
+# only thing that names them is the seed above.
+assets/capture/
+
+# Place lookups the server caches between runs.
+server/data/

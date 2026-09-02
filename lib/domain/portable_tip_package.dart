@@ -969,7 +969,7 @@ String? _categoryTagName(Object? wireName) => switch (wireName) {
   'restaurant_cafe' => '맛집·카페',
   'recipe' => '레시피',
   'shopping' => '쇼핑',
-  'travel_place' => '여행·장소',
+  'travel_place' => '장소',
   'life_tip' => '생활·팁',
   _ => null,
 };

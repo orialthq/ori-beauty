@@ -19,7 +19,23 @@ export function makeValidRequest(overrides = {}) {
       locale: "ko-KR",
       ...overrides.capture,
     },
+    ...(overrides.vocabulary ? { vocabulary: overrides.vocabulary } : {}),
   };
+}
+
+/// One model-facing tag: observations first, for the reason in the schema.
+export function makeTag(
+  value,
+  observations = ["메뉴"],
+  confidence = 0.8,
+  evidenceIds = ["e1"],
+) {
+  return { observations, value, confidence, evidenceIds };
+}
+
+/// The four generation slots, all empty unless overridden.
+export function makeFiling(overrides = {}) {
+  return { fields: [], areas: [], kinds: [], traits: [], ...overrides };
 }
 
 export function makeValidAnalysis(overrides = {}) {
@@ -28,14 +44,10 @@ export function makeValidAnalysis(overrides = {}) {
     model: MODEL,
     domain: "food",
     contentKind: "recipe",
-    tags: [
-      {
-        observations: ["된장찌개"],
-        value: "국·찌개",
-        confidence: 0.95,
-        evidenceIds: ["e1"],
-      },
-    ],
+    filing: makeFiling({
+      fields: [makeTag("레시피", ["된장찌개"], 0.9)],
+      kinds: [makeTag("국·찌개", ["된장찌개"], 0.95)],
+    }),
     completeness: "partial",
     title: {
       value: "된장찌개",

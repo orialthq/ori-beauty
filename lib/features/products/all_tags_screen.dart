@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
+import '../../data/tag_merge_service.dart';
+import '../../domain/tag_key.dart';
 import '../../state/app_controller.dart';
 import '../common/tag_ui.dart';
 
@@ -32,9 +34,11 @@ String tagSectionOf(String value) {
 /// capping the row there: a list of hundreds is a real thing that needs a real
 /// screen, and that screen is not the one you open to look at what you saved.
 ///
-/// Renaming is the reader's half of the deduplication problem. The analysis
-/// will keep producing 멕시코 음식 and 멕시코음식 until something merges them,
-/// and until an automatic pass can judge that, the person who saved both can.
+/// Renaming is the reader's half of the deduplication problem. Spellings of one
+/// word are joined on the way in now, so what is left for a person to judge is
+/// two different words that mean one thing — and the librarian pass at the top
+/// of this screen points those out, one pair at a time, for the reader to
+/// merge or wave away. It never merges on its own.
 final class AllTagsScreen extends StatefulWidget {
   const AllTagsScreen({
     required this.controller,
@@ -54,6 +58,22 @@ final class AllTagsScreen extends StatefulWidget {
 class _AllTagsScreenState extends State<AllTagsScreen> {
   final _query = TextEditingController();
 
+  /// What the librarian pass proposed, once it has answered. Null until then,
+  /// so a screen still waiting draws nothing rather than an empty section.
+  List<TagMerge>? _merges;
+
+  /// Pairs the reader waved away this visit. Not remembered beyond it: a pass
+  /// over a changed library may rightly ask again.
+  final _dismissed = <String>{};
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.suggestTagMerges().then((merges) {
+      if (mounted) setState(() => _merges = merges);
+    });
+  }
+
   @override
   void dispose() {
     _query.dispose();
@@ -68,13 +88,19 @@ class _AllTagsScreenState extends State<AllTagsScreen> {
     );
     if (typed == null || typed == from || !mounted) return;
 
-    // Landing on a name that already exists is a merge, not a mistake. Say so
+    // Landing on a word that already exists is a merge, not a mistake. Say so
     // with the number it will become, because that number is the only way to
-    // tell a merge from a rename before it happens.
-    final existing = widget.controller.tagCounts
-        .where((entry) => entry.tag.value == typed)
-        .firstOrNull;
+    // tell a merge from a rename before it happens. A word is matched by what
+    // it is rather than how it is spelled, and the library's spelling is the
+    // one it lands on — unless the reader is respelling this very word, which
+    // is a rename and nothing else.
+    final existing = tagKey(typed) == tagKey(from)
+        ? null
+        : widget.controller.tagCounts
+              .where((entry) => entry.tag.key == tagKey(typed))
+              .firstOrNull;
     if (existing != null) {
+      final landing = existing.tag.value;
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
@@ -82,8 +108,8 @@ class _AllTagsScreenState extends State<AllTagsScreen> {
           backgroundColor: AppTheme.surfaceRaised,
           title: const Text('태그 합치기'),
           content: Text(
-            '$from $count개가 $typed에 합쳐져요.\n'
-            '합치면 $typed 하나로 ${existing.count + count}개가 됩니다.',
+            '$from $count개가 $landing에 합쳐져요.\n'
+            '합치면 $landing 하나로 ${existing.count + count}개가 됩니다.',
             style: const TextStyle(
               color: AppTheme.muted,
               fontSize: 14,
@@ -134,7 +160,37 @@ class _AllTagsScreenState extends State<AllTagsScreen> {
           final sorted = counts.toList()
             ..sort((a, b) => a.tag.value.compareTo(b.tag.value));
 
+          // Suggestions only while the whole list is showing. A reader who
+          // typed a name is looking for that name, not for advice.
+          final known = {
+            for (final entry in widget.controller.tagCounts) entry.tag.value,
+          };
+          final suggestions = query.isEmpty
+              ? [
+                  for (final merge in _merges ?? const <TagMerge>[])
+                    if (!_dismissed.contains(merge.from) &&
+                        known.contains(merge.from) &&
+                        known.contains(merge.into))
+                      merge,
+                ]
+              : const <TagMerge>[];
+
           final rows = <Widget>[];
+          if (suggestions.isNotEmpty) {
+            rows.add(const _SectionHeader(letter: '합치기 제안'));
+            for (final merge in suggestions) {
+              rows.add(
+                _MergeRow(
+                  merge: merge,
+                  onMerge: () async {
+                    await widget.controller.renameTag(merge.from, merge.into);
+                    if (mounted) setState(() {});
+                  },
+                  onDismiss: () => setState(() => _dismissed.add(merge.from)),
+                ),
+              );
+            }
+          }
           String? section;
           for (final entry in sorted) {
             final letter = tagSectionOf(entry.tag.value);
@@ -229,6 +285,81 @@ final class _SectionHeader extends StatelessWidget {
           fontWeight: FontWeight.w800,
           letterSpacing: 0.4,
         ),
+      ),
+    );
+  }
+}
+
+/// One pair the librarian pass thinks is one word, and the two answers.
+///
+/// The smaller pile goes into the larger: `from` is always the word fewer
+/// things sit under, so accepting never renames the majority.
+final class _MergeRow extends StatelessWidget {
+  const _MergeRow({
+    required this.merge,
+    required this.onMerge,
+    required this.onDismiss,
+  });
+
+  final TagMerge merge;
+  final VoidCallback onMerge;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      key: Key('tag-merge-row-${merge.from}'),
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: merge.from,
+                        style: const TextStyle(color: AppTheme.muted),
+                      ),
+                      const TextSpan(text: '  →  '),
+                      TextSpan(text: merge.into),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppTheme.ink,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                if (merge.reason.isNotEmpty)
+                  Text(
+                    merge.reason,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: AppTheme.subtle,
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          TextButton(
+            key: Key('tag-merge-dismiss-${merge.from}'),
+            onPressed: onDismiss,
+            child: const Text('무시'),
+          ),
+          FilledButton(
+            key: Key('tag-merge-apply-${merge.from}'),
+            onPressed: onMerge,
+            child: const Text('합치기'),
+          ),
+        ],
       ),
     );
   }

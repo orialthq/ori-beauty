@@ -8,7 +8,10 @@ import '../../domain/models.dart';
 /// No colour of its own. Tags are unbounded, so a palette would either repeat
 /// or be computed from the name, and a colour that means nothing is worse than
 /// none. What a chip does say is where the tag came from: a web finding is
-/// marked, because it was never on the screenshot.
+/// marked, because it was never on the screenshot, and a tag the analysis
+/// could only hang on the shop's name is marked as a guess, because the reader
+/// is the one who knows whether it is right and cannot tell it from a read
+/// one otherwise.
 final class TagChip extends StatelessWidget {
   const TagChip({
     required this.tag,
@@ -33,6 +36,16 @@ final class TagChip extends StatelessWidget {
         children: [
           if (tag.source == TagSource.web) ...[
             const Icon(Icons.public_rounded, size: 13, color: AppTheme.subtle),
+            const SizedBox(width: 5),
+          ],
+          if (tag.isWeak) ...[
+            Icon(
+              Icons.help_outline_rounded,
+              key: Key('tag-weak-${tag.value}'),
+              size: 13,
+              color: AppTheme.caution,
+              semanticLabel: '확인 권장',
+            ),
             const SizedBox(width: 5),
           ],
           ConstrainedBox(
@@ -102,6 +115,12 @@ final class TagChip extends StatelessWidget {
 /// Adding and removing rather than picking from a list: there is no list to
 /// pick from. Whatever the reader types becomes a tag, and the same name typed
 /// twice is the same tag.
+///
+/// Under the chips, what each tag was read from. A tag is a claim about the
+/// screenshot, and the words it was read from are the only way to check the
+/// claim without opening the screenshot again: `성수 ← "성수동 2가"` is
+/// checkable in a glance, a bare `성수` is not. Tags with nothing behind them —
+/// the reader's own — have no line, because the reader is the evidence.
 final class TagEditor extends StatelessWidget {
   const TagEditor({
     required this.tags,
@@ -116,6 +135,7 @@ final class TagEditor extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final grounded = tags.where((tag) => tag.quotes.isNotEmpty);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -147,6 +167,14 @@ final class TagEditor extends StatelessWidget {
             _AddTagChip(onTap: () => _add(context)),
           ],
         ),
+        if (grounded.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [for (final tag in grounded) _EvidenceLine(tag: tag)],
+            ),
+          ),
       ],
     );
   }
@@ -181,6 +209,44 @@ final class TagEditor extends StatelessWidget {
           else
             kept,
       ]),
+    );
+  }
+}
+
+/// `성수 ← "성수동 2가" · "서울숲"`: a tag and the words it was read from.
+final class _EvidenceLine extends StatelessWidget {
+  const _EvidenceLine({required this.tag});
+
+  final ContentTag tag;
+
+  @override
+  Widget build(BuildContext context) {
+    final quoted = tag.quotes.map((quote) => '"$quote"').join(' · ');
+    return Padding(
+      key: Key('tag-evidence-${tag.value}'),
+      padding: const EdgeInsets.only(bottom: 3),
+      child: Text.rich(
+        TextSpan(
+          children: [
+            TextSpan(
+              text: tag.value,
+              style: TextStyle(
+                color: tag.isWeak ? AppTheme.caution : AppTheme.muted,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const TextSpan(text: '  ←  '),
+            TextSpan(text: quoted),
+          ],
+        ),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          color: AppTheme.subtle,
+          fontSize: 12,
+          height: 1.4,
+        ),
+      ),
     );
   }
 }

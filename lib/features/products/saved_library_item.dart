@@ -104,7 +104,7 @@ final class SavedLibraryItem {
   final String searchableText;
 
   /// Every word this is filed under. A saved thing appears under each of them,
-  /// which is what lets one capture sit in 뷰티 and 쇼핑 at once.
+  /// which is what lets one capture sit in 레시피 and 건강·운동 at once.
   final List<ContentTag> tags;
 
   final DateTime updatedAt;

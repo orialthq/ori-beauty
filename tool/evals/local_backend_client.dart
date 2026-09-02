@@ -25,8 +25,9 @@ final class LocalBackendClient implements EvalBackend {
   @override
   Future<Map<String, Object?>> analyze(
     EvalSample sample,
-    Directory dataDirectory,
-  ) async {
+    Directory dataDirectory, {
+    EvalVocabulary? vocabulary,
+  }) async {
     final imageFile = _resolvePrivateFile(
       dataDirectory,
       sample.input.imageFile,
@@ -62,6 +63,10 @@ final class LocalBackendClient implements EvalBackend {
         'capturedAt': null,
         'locale': 'ko-KR',
       },
+      // An empty vocabulary is the same request as none; omitting it keeps the
+      // first sample of a growing run identical to a plain run.
+      if (vocabulary != null && vocabulary.entries.isNotEmpty)
+        'vocabulary': vocabulary.toJson(),
     });
 
     HttpClientResponse response;

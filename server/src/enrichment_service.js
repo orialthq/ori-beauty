@@ -30,12 +30,11 @@ import {
 import { buildJudgmentRequest } from "./judgment_prompt.js";
 import { resolvePlaceIdentity } from "./place_identity.js";
 import { OpenAITransportError } from "./errors.js";
+import { normalizeTagValue } from "./tag_key.js";
 
 const LABEL_AXES = Object.freeze(["kind", "access"]);
 const MAX_LABELS_PER_AXIS = 4;
 const MAX_EXCERPTS = 60;
-const LABEL_PATTERN =
-  /^[가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+(?:[ ·ㆍ&/+＋~-][가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+)*$/u;
 
 /// access is a closed vocabulary, so a value outside the list is a model that
 /// ignored the contract rather than a label worth keeping. kind stays open
@@ -419,11 +418,7 @@ function collapse(value) {
 }
 
 function normalizeLabel(value) {
-  if (typeof value !== "string") return null;
-  const normalized = value.normalize("NFKC").trim().replace(/\s+/gu, " ");
-  const length = Array.from(normalized).length;
-  if (length < 2 || length > 20 || !LABEL_PATTERN.test(normalized)) return null;
-  return normalized;
+  return normalizeTagValue(value);
 }
 
 function clampConfidence(value) {

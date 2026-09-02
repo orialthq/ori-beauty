@@ -8,6 +8,10 @@ const _defaultDataDirectory = 'tool/evals/local/samples';
 const _defaultOutputPath = 'tool/evals/reports/latest.json';
 const _defaultEndpoint = 'http://127.0.0.1:8787/v1/analyze';
 
+/// Enough to reproduce the 10-run measurements in docs/PLACE_ENRICHMENT.md
+/// twice over; beyond that a typo costs more than it tells.
+const _maxRepeat = 20;
+
 Future<void> main(List<String> arguments) async {
   _CliOptions options;
   try {
@@ -47,6 +51,21 @@ Future<void> main(List<String> arguments) async {
     return;
   }
 
+  EvalVocabulary? vocabulary;
+  if (options.vocabularyPath case final path?) {
+    try {
+      vocabulary = EvalVocabulary.fromJsonString(
+        await File(path).readAsString(),
+      );
+    } on Object {
+      stderr.writeln(
+        'Could not load the vocabulary file. See tool/evals/README.md.',
+      );
+      exitCode = 66;
+      return;
+    }
+  }
+
   LocalBackendClient backend;
   try {
     backend = LocalBackendClient(endpoint: endpoint, apiKey: apiKey);
@@ -61,6 +80,9 @@ Future<void> main(List<String> arguments) async {
       manifest,
       Directory(options.dataDirectory),
       onlySampleIds: options.sampleIds.isEmpty ? null : options.sampleIds,
+      repeat: options.repeat,
+      vocabulary: vocabulary,
+      growVocabulary: options.growVocabulary,
     );
     final outputFile = File(options.outputPath);
     await outputFile.parent.create(recursive: true);
@@ -70,6 +92,12 @@ Future<void> main(List<String> arguments) async {
       'Eval complete: ${aggregate.passedCount} passed, '
       '${aggregate.failedCount} failed.',
     );
+    if (aggregate.tagReproducibility case final reproducibility?) {
+      stdout.writeln(
+        'Tag reproducibility over ${aggregate.repeat} runs: '
+        '${reproducibility.toStringAsFixed(3)}.',
+      );
+    }
     stdout.writeln('Aggregate report written without sample content.');
     if (aggregate.failedCount > 0) {
       exitCode = 1;
@@ -91,6 +119,9 @@ final class _CliOptions {
     required this.dataDirectory,
     required this.outputPath,
     required this.sampleIds,
+    required this.repeat,
+    required this.vocabularyPath,
+    required this.growVocabulary,
     required this.showHelp,
   });
 
@@ -98,6 +129,9 @@ final class _CliOptions {
   final String dataDirectory;
   final String outputPath;
   final Set<String> sampleIds;
+  final int repeat;
+  final String? vocabularyPath;
+  final bool growVocabulary;
   final bool showHelp;
 
   factory _CliOptions.parse(List<String> arguments) {
@@ -105,6 +139,9 @@ final class _CliOptions {
     var dataDirectory = _defaultDataDirectory;
     var outputPath = _defaultOutputPath;
     final sampleIds = <String>{};
+    var repeat = 1;
+    String? vocabularyPath;
+    var growVocabulary = false;
     var showHelp = false;
 
     for (var index = 0; index < arguments.length; index++) {
@@ -113,10 +150,16 @@ final class _CliOptions {
         showHelp = true;
         continue;
       }
+      if (argument == '--grow-vocabulary') {
+        growVocabulary = true;
+        continue;
+      }
       if (argument == '--manifest' ||
           argument == '--data-dir' ||
           argument == '--output' ||
-          argument == '--sample') {
+          argument == '--sample' ||
+          argument == '--repeat' ||
+          argument == '--vocabulary') {
         if (index + 1 >= arguments.length) {
           throw FormatException('$argument requires a value.');
         }
@@ -135,6 +178,17 @@ final class _CliOptions {
               );
             }
             sampleIds.add(value);
+          case '--repeat':
+            final parsed = int.tryParse(value);
+            if (parsed == null || parsed < 1 || parsed > _maxRepeat) {
+              throw const FormatException(
+                '--repeat must be an integer from 1 to $_maxRepeat.',
+              );
+            }
+            repeat = parsed;
+          case '--vocabulary':
+            validatePrivateRelativePath(value, '--vocabulary');
+            vocabularyPath = value;
         }
         continue;
       }
@@ -146,6 +200,9 @@ final class _CliOptions {
       dataDirectory: dataDirectory,
       outputPath: outputPath,
       sampleIds: sampleIds,
+      repeat: repeat,
+      vocabularyPath: vocabularyPath,
+      growVocabulary: growVocabulary,
       showHelp: showHelp,
     );
   }
@@ -159,11 +216,14 @@ Usage:
   dart run tool/evals/run_local_eval.dart [options]
 
 Options:
-  --manifest <path>  Private manifest (default: $_defaultManifestPath)
-  --data-dir <path>  Private sample directory (default: $_defaultDataDirectory)
-  --output <path>    Aggregate JSON output (default: $_defaultOutputPath)
-  --sample <id>      Run one opaque ID; repeat to run more than one
-  -h, --help         Show this help
+  --manifest <path>    Private manifest (default: $_defaultManifestPath)
+  --data-dir <path>    Private sample directory (default: $_defaultDataDirectory)
+  --output <path>      Aggregate JSON output (default: $_defaultOutputPath)
+  --sample <id>        Run one opaque ID; repeat to run more than one
+  --repeat <n>         Analyze each sample n times, 1 to $_maxRepeat (default: 1)
+  --vocabulary <path>  Relative path to a vocabulary JSON sent with every request
+  --grow-vocabulary    Add each sample's first-run tags to the vocabulary
+  -h, --help           Show this help
 
 Environment:
   ORI_EVAL_ENDPOINT  Loopback endpoint (default: $_defaultEndpoint)

@@ -19,7 +19,7 @@ export const DEEPSEEK_MODEL = "deepseek-v4-flash";
 export const DEEPSEEK_TIMEOUT_MS = 110_000;
 export const DEEPSEEK_BASE_URL =
   process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com";
-export const SCHEMA_VERSION = "2.0";
+export const SCHEMA_VERSION = "2.1";
 
 export const DEFAULT_MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 export const DEFAULT_MAX_BODY_BYTES = 17 * 1024 * 1024;

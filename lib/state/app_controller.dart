@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -12,7 +13,10 @@ import '../data/portable_tip_service.dart';
 import '../data/place_enrichment_service.dart';
 import '../data/place_map_links.dart';
 import '../data/remote_content_analysis_service.dart';
+import '../data/tag_merge_service.dart';
+import '../data/tag_sense_service.dart';
 import '../domain/models.dart';
+import '../domain/tag_key.dart';
 import '../domain/portable_tip_package.dart';
 
 final class AppController extends ChangeNotifier {
@@ -22,6 +26,8 @@ final class AppController extends ChangeNotifier {
     AppSnapshotStore? snapshotStore,
     this._portableTipInbox,
     this._placeEnrichmentService = const NoPlaceEnrichmentService(),
+    this._tagMergeService = const NoTagMergeService(),
+    this._tagSenseService = const NoTagSenseService(),
   ]) : _captures = [...DemoCatalog.captures],
        _groups = [...DemoCatalog.groups],
        _snapshotStore = snapshotStore ?? InMemoryAppSnapshotStore();
@@ -31,6 +37,16 @@ final class AppController extends ChangeNotifier {
   final AppSnapshotStore _snapshotStore;
   final PortableTipInbox? _portableTipInbox;
   final PlaceEnrichmentService _placeEnrichmentService;
+  final TagMergeService _tagMergeService;
+  final TagSenseService _tagSenseService;
+
+  /// The sense dictionary: [tagKey] to the words that lead to that tag, the
+  /// thing "매운거" is matched against. Filled in the background, one ask per
+  /// tag ever — an empty list is a real answer meaning "asked, nothing
+  /// useful" and stops the asking.
+  final Map<String, List<String>> _tagSenses = {};
+  var _tagSensesInFlight = false;
+  var _tagSensesQueued = false;
   final List<CaptureRecord> _captures;
   final List<ProductGroup> _groups;
   final Set<String> _durablySavedTransportIds = {};
@@ -175,6 +191,7 @@ final class AppController extends ChangeNotifier {
 
     notifyListeners();
     await _acknowledgeAfterDurableSave(organizedCapture);
+    unawaited(_topUpTagSenses());
     return true;
   }
 
@@ -305,6 +322,119 @@ final class AppController extends ChangeNotifier {
     ]);
   }
 
+  /// The library's words with their counts, most used first, for showing the
+  /// analysis what is already in use. Capped where the request is capped.
+  List<TagVocabularyEntry> get tagVocabulary => [
+    for (final entry in tagCounts.take(
+      RemoteContentAnalysisService.maxVocabulary,
+    ))
+      (value: entry.tag.value, count: entry.count),
+  ];
+
+  /// How the library spells each word, by [tagKey].
+  ///
+  /// [tagCounts] is most-used first, so the first spelling met for a key is
+  /// the one under which most things are filed — the spelling that wins when
+  /// another arrives.
+  Map<String, String> get _spellings {
+    final spellings = <String, String>{};
+    for (final entry in tagCounts) {
+      spellings.putIfAbsent(entry.tag.key, () => entry.tag.value);
+    }
+    return spellings;
+  }
+
+  /// The sense dictionary, read-only, for the search screens to match
+  /// against on every keystroke.
+  Map<String, List<String>> get tagSenses => UnmodifiableMapView(_tagSenses);
+
+  /// Asks for sense words for any tag that has never been asked about.
+  ///
+  /// Runs after anything that can put a new word in the library, does nothing
+  /// when there is nothing new, and never overlaps itself. A failure is
+  /// retried by whatever changes the library next — offline, that is a cheap
+  /// refused connection, and the search works from the stored dictionary
+  /// meanwhile.
+  Future<void> _topUpTagSenses() async {
+    // A round already running takes a note rather than being raced: the tag
+    // that arrived mid-round is picked up by one more round at the end,
+    // instead of being dropped and waiting for the next library change.
+    if (_tagSensesInFlight) {
+      _tagSensesQueued = true;
+      return;
+    }
+    _tagSensesInFlight = true;
+    try {
+      do {
+        _tagSensesQueued = false;
+        final missing = [
+          for (final entry in tagVocabulary)
+            if (!_tagSenses.containsKey(tagKey(entry.value))) entry,
+        ];
+        if (missing.isEmpty) return;
+        final found = await _tagSenseService.senses(missing);
+        // A failed call is not an answer. Whatever changes the library next
+        // retries; spinning here would hammer a server that just said no.
+        if (found.isEmpty) return;
+        _tagSenses.addAll(found);
+        notifyListeners();
+        await _persistState();
+      } while (_tagSensesQueued);
+    } finally {
+      _tagSensesInFlight = false;
+    }
+  }
+
+  /// Strikes one word out of a tag's senses, for good.
+  ///
+  /// The reader saying "매운 does not lead to 이 태그" is a judgement about
+  /// their own library, and it sticks: the emptied or shortened list is
+  /// stored, and a tag that has an entry is never asked about again.
+  Future<void> removeTagSense(String tag, String word) async {
+    final key = tagKey(tag);
+    final words = _tagSenses[key];
+    if (words == null) return;
+    final kept = [
+      for (final sense in words)
+        if (sense != word) sense,
+    ];
+    if (kept.length == words.length) return;
+    _tagSenses[key] = List.unmodifiable(kept);
+    notifyListeners();
+    await _persistState();
+  }
+
+  /// The dictionary trimmed to words the library still has, for storing.
+  ///
+  /// A merged or renamed-away tag takes its senses with it; keeping them
+  /// would grow the snapshot with words nothing can ever match again.
+  Map<String, List<String>> _prunedTagSenses() {
+    if (_tagSenses.isEmpty) return const {};
+    final keep = <String>{
+      for (final capture in _captures)
+        for (final tag in capture.contentTags) tag.key,
+    };
+    return {
+      for (final entry in _tagSenses.entries)
+        if (keep.contains(entry.key)) entry.key: entry.value,
+    };
+  }
+
+  /// Which of the library's words are one word, as far as the librarian pass
+  /// can tell. Suggestions only; [renameTag] is what acts on one. A pair
+  /// naming a word the library no longer has is dropped here, because the
+  /// library may have changed while the answer was on its way.
+  Future<List<TagMerge>> suggestTagMerges() async {
+    final words = tagVocabulary;
+    if (words.length < 2) return const <TagMerge>[];
+    final suggested = await _tagMergeService.suggest(words);
+    final known = {for (final entry in tagCounts) entry.tag.value};
+    return [
+      for (final merge in suggested)
+        if (known.contains(merge.from) && known.contains(merge.into)) merge,
+    ];
+  }
+
   int organizedCountForTag(String tag) {
     final structuredCount = organizedStructuredCaptures
         .where((capture) => capture.hasTag(tag))
@@ -335,6 +465,7 @@ final class AppController extends ChangeNotifier {
     });
     await _drainIncomingShares();
     await _drainPortableTips();
+    unawaited(_topUpTagSenses());
   }
 
   Future<void> _drainPortableTips() {
@@ -552,7 +683,9 @@ final class AppController extends ChangeNotifier {
       return;
     }
     try {
-      final analysis = await _contentAnalysisService.analyze(initial);
+      final analysis = _spelledLikeLibrary(
+        await _contentAnalysisService.analyze(initial),
+      );
       final index = _captures.indexWhere(
         (capture) => capture.raw.id == captureId,
       );
@@ -623,9 +756,12 @@ final class AppController extends ChangeNotifier {
       address: structured.place?.address,
       searchArea: structured.place?.searchArea,
     );
-    final found = await _placeEnrichmentService.enrich(
-      name: placeName,
-      searchArea: links?.area,
+    final found = adoptedSpellings(
+      await _placeEnrichmentService.enrich(
+        name: placeName,
+        searchArea: links?.area,
+      ),
+      _spellings,
     );
     if (found.isEmpty) {
       return;
@@ -640,24 +776,10 @@ final class AppController extends ChangeNotifier {
     if (currentStructured == null) {
       return;
     }
-    final run = current.analysis!;
     _captures[index] = current.copyWith(
-      analysis: AnalysisRun(
-        id: run.id,
-        inputId: run.inputId,
-        normalizerVersion: run.normalizerVersion,
-        analyzerVersion: run.analyzerVersion,
-        status: run.status,
-        completedAt: run.completedAt,
-        evidence: run.evidence,
-        productMentions: run.productMentions,
-        statements: run.statements,
-        disclosure: run.disclosure,
-        failureCode: run.failureCode,
-        model: run.model,
-        startedAt: run.startedAt,
-        attempt: run.attempt,
-        structuredContent: currentStructured.withTags(found),
+      analysis: _withStructured(
+        current.analysis!,
+        currentStructured.withTags(found),
       ),
     );
     await _persistState();
@@ -1081,6 +1203,7 @@ final class AppController extends ChangeNotifier {
     if (saved && capture.raw.origin == CaptureOrigin.androidShare) {
       await _incomingShareService.acknowledge([capture.raw.transportEventId]);
     }
+    unawaited(_topUpTagSenses());
   }
 
   CaptureRecord? _applyStructuredOrganization(
@@ -1108,7 +1231,9 @@ final class AppController extends ChangeNotifier {
         resolution: ReviewResolution.confirmed,
         reviewedAt: DateTime.now(),
       ),
-      tagOverride: tags == null ? capture.tagOverride : dedupedTags(tags),
+      tagOverride: tags == null
+          ? capture.tagOverride
+          : dedupedTags(adoptedSpellings(tags, _spellings)),
     );
     return capture;
   }
@@ -1124,10 +1249,11 @@ final class AppController extends ChangeNotifier {
       return;
     }
     _captures[index] = _captures[index].copyWith(
-      tagOverride: dedupedTags(tags),
+      tagOverride: dedupedTags(adoptedSpellings(tags, _spellings)),
     );
     notifyListeners();
     await _persistState();
+    unawaited(_topUpTagSenses());
   }
 
   /// Retags every capture filed under one product.
@@ -1136,7 +1262,7 @@ final class AppController extends ChangeNotifier {
   /// library card carries one set, and leaving the others behind would make the
   /// same product answer differently depending on which capture was read.
   Future<void> updateGroupTags(String groupId, List<ContentTag> tags) async {
-    final resolved = dedupedTags(tags);
+    final resolved = dedupedTags(adoptedSpellings(tags, _spellings));
     var changed = false;
     for (var index = 0; index < _captures.length; index++) {
       final capture = _captures[index];
@@ -1151,6 +1277,7 @@ final class AppController extends ChangeNotifier {
     }
     notifyListeners();
     await _persistState();
+    unawaited(_topUpTagSenses());
   }
 
   /// Renames a tag everywhere it is filed, merging when the name is taken.
@@ -1162,16 +1289,29 @@ final class AppController extends ChangeNotifier {
   ///
   /// Every tag this touches becomes the reader's own. They have said what this
   /// is called, and a later pass must not argue with it.
+  ///
+  /// Renaming onto a spelling of a word the library already has lands on the
+  /// library's spelling of it: typing `스킨 케어` while `스킨케어` exists is a
+  /// merge into `스킨케어`. Renaming a word onto another spelling of itself is
+  /// the one case where the typed spelling wins, because respelling the word
+  /// is the whole request and there is nothing else it could mean.
   Future<void> renameTag(String from, String to) async {
-    final target = normalizeTagName(to);
-    if (target == from || !isValidTagName(target)) {
+    final typed = normalizeTagName(to);
+    if (!isValidTagName(typed)) {
+      return;
+    }
+    final fromKey = tagKey(from);
+    final target = tagKey(typed) == fromKey
+        ? typed
+        : (_spellings[tagKey(typed)] ?? typed);
+    if (target == from) {
       return;
     }
     var changed = false;
     for (var index = 0; index < _captures.length; index++) {
       final capture = _captures[index];
       final tags = capture.contentTags;
-      if (!tags.any((tag) => tag.value == from)) {
+      if (!tags.any((tag) => tag.key == fromKey)) {
         continue;
       }
       _captures[index] = capture.copyWith(
@@ -1179,7 +1319,7 @@ final class AppController extends ChangeNotifier {
         // on this capture, the renamed one collapses into it.
         tagOverride: dedupedTags([
           for (final tag in tags)
-            if (tag.value == from)
+            if (tag.key == fromKey)
               tag.copyWith(value: target, source: TagSource.user)
             else
               tag,
@@ -1192,6 +1332,7 @@ final class AppController extends ChangeNotifier {
     }
     notifyListeners();
     await _persistState();
+    unawaited(_topUpTagSenses());
   }
 
   Future<bool> presentCapturePicker() {
@@ -1242,6 +1383,7 @@ final class AppController extends ChangeNotifier {
 
   Future<void> _restoreSnapshot() async {
     try {
+      _tagSenses.addAll(await _snapshotStore.loadTagSenses());
       final persistedCaptures = await _snapshotStore.load();
       final knownTransportIds = _captures
           .map((capture) => capture.raw.transportEventId)
@@ -1318,6 +1460,10 @@ final class AppController extends ChangeNotifier {
           restored.map((capture) => capture.raw.transportEventId),
         );
         notifyListeners();
+        if (_unifySpellings()) {
+          await _persistState();
+          notifyListeners();
+        }
       }
       for (final captureId in pendingAnalysisIds) {
         await _analyzeCapture(captureId);
@@ -1325,6 +1471,91 @@ final class AppController extends ChangeNotifier {
     } catch (error, stackTrace) {
       debugPrint('App snapshot restore failed: $error\n$stackTrace');
     }
+  }
+
+  /// [run] carrying [structured] in place of what it read, everything else as
+  /// it was.
+  AnalysisRun _withStructured(
+    AnalysisRun run,
+    StructuredContentAnalysis structured,
+  ) => AnalysisRun(
+    id: run.id,
+    inputId: run.inputId,
+    normalizerVersion: run.normalizerVersion,
+    analyzerVersion: run.analyzerVersion,
+    status: run.status,
+    completedAt: run.completedAt,
+    evidence: run.evidence,
+    productMentions: run.productMentions,
+    statements: run.statements,
+    disclosure: run.disclosure,
+    failureCode: run.failureCode,
+    model: run.model,
+    startedAt: run.startedAt,
+    attempt: run.attempt,
+    structuredContent: structured,
+  );
+
+  /// [run] with its tags spelled the way the library already spells them.
+  ///
+  /// The analysis is shown the library's words and asked to reuse them, and
+  /// the server rewrites a variant it emits anyway. This is the last line: a
+  /// word that reaches the library is written the library's way, whatever
+  /// happened upstream, so `스킨 케어` never sits beside `스킨케어`.
+  AnalysisRun _spelledLikeLibrary(AnalysisRun run) {
+    final structured = run.structuredContent;
+    if (structured == null || structured.tags.isEmpty) return run;
+    return _withStructured(
+      run,
+      structured.replacingTags(adoptedSpellings(structured.tags, _spellings)),
+    );
+  }
+
+  /// Writes every tag in the library the way its most-used spelling is
+  /// written, and says whether anything changed.
+  ///
+  /// A library saved before spellings were joined can hold `멕시코 음식` on
+  /// one capture and `멕시코음식` on another. Joining them is done once, on
+  /// the way in, in place: a capture the reader tagged keeps its own list with
+  /// the spellings changed, and one still carrying the analysis's tags has
+  /// those rewritten rather than being given an override — an override would
+  /// freeze it, and a web tag arriving later would have nowhere to land.
+  bool _unifySpellings() {
+    final spellings = _spellings;
+    var changed = false;
+    for (var index = 0; index < _captures.length; index++) {
+      final capture = _captures[index];
+      final override = capture.tagOverride;
+      if (override != null) {
+        final adopted = adoptedSpellings(override, spellings);
+        if (!_sameSpellings(adopted, override)) {
+          _captures[index] = capture.copyWith(
+            tagOverride: dedupedTags(adopted),
+          );
+          changed = true;
+        }
+        continue;
+      }
+      final run = capture.analysis;
+      final structured = run?.structuredContent;
+      if (run == null || structured == null) continue;
+      final adopted = adoptedSpellings(structured.tags, spellings);
+      if (!_sameSpellings(adopted, structured.tags)) {
+        _captures[index] = capture.copyWith(
+          analysis: _withStructured(run, structured.replacingTags(adopted)),
+        );
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  static bool _sameSpellings(List<ContentTag> a, List<ContentTag> b) {
+    if (a.length != b.length) return false;
+    for (var index = 0; index < a.length; index++) {
+      if (a[index].value != b[index].value) return false;
+    }
+    return true;
   }
 
   /// Gives every capture in a group the tags one of them already carried.
@@ -1426,7 +1657,7 @@ final class AppController extends ChangeNotifier {
     var saved = false;
     _snapshotWriteTail = _snapshotWriteTail.then((_) async {
       try {
-        await _snapshotStore.save(persisted);
+        await _snapshotStore.save(persisted, tagSenses: _prunedTagSenses());
         _durablySavedTransportIds
           ..clear()
           ..addAll(persistedTransportIds);

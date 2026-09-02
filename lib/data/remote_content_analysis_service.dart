@@ -29,12 +29,26 @@ final class RemoteContentAnalysisService implements ContentAnalysisService {
     this.baseUrl,
     this.timeout = const Duration(seconds: 90),
     this.fallback = const BaselineContentAnalysisService(),
+    this.vocabulary,
   });
+
+  /// The most of the reader's words one request carries. Past this the list
+  /// is longer than the model reads carefully, and the tail is the words used
+  /// once, which are the ones least worth steering towards.
+  static const maxVocabulary = 300;
 
   /// Null until a build names one, which leaves the platform default to stand.
   final String? baseUrl;
   final Duration timeout;
   final BaselineContentAnalysisService fallback;
+
+  /// The words the reader's library already files under, asked for at the
+  /// moment of each request so a capture is tagged against the library as it
+  /// is then. Sent so the analysis reuses a word already in use rather than
+  /// coining its own spelling of it; the model never learns which capture any
+  /// word sits on. Null sends nothing, which is what a build without a
+  /// library does.
+  final List<TagVocabularyEntry> Function()? vocabulary;
 
   String get _serverUrl => baseUrl ?? defaultAnalysisBaseUrl();
 
@@ -87,6 +101,10 @@ final class RemoteContentAnalysisService implements ContentAnalysisService {
     if (bytes.length != attachment.byteSize) {
       throw const AnalysisServiceException('source_file_changed');
     }
+    final words = (vocabulary?.call() ?? const <TagVocabularyEntry>[])
+        .where((entry) => entry.count > 0 && isValidTagName(entry.value))
+        .take(maxVocabulary)
+        .toList(growable: false);
     final client = HttpClient()..connectionTimeout = timeout;
     try {
       final request = await client.postUrl(endpoint).timeout(timeout);
@@ -105,6 +123,11 @@ final class RemoteContentAnalysisService implements ContentAnalysisService {
             'capturedAt': capture.raw.receivedAt.toUtc().toIso8601String(),
             'locale': 'ko-KR',
           },
+          if (words.isNotEmpty)
+            'vocabulary': [
+              for (final entry in words)
+                {'value': entry.value, 'count': entry.count},
+            ],
         }),
       );
       final response = await request.close().timeout(timeout);

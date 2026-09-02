@@ -191,7 +191,12 @@ ContentKind _contentKindFor(
   required bool hasPlace,
 }) {
   if (hasRecipe || tags.contains('레시피')) return ContentKind.recipe;
-  if (hasPlace || tags.contains('맛집·카페') || tags.contains('여행·장소')) {
+  // 여행·장소 is what this field was called before; a package exported then
+  // still names it that way, and it means the same thing.
+  if (hasPlace ||
+      tags.contains('맛집·카페') ||
+      tags.contains('장소') ||
+      tags.contains('여행·장소')) {
     return ContentKind.place;
   }
   if (tags.contains('뷰티')) return ContentKind.beautyProduct;
@@ -203,7 +208,9 @@ PlaceCategory _placeCategoryFor(List<String> tags) {
   if (tags.contains('맛집·카페')) return PlaceCategory.restaurant;
   if (tags.contains('뷰티')) return PlaceCategory.beauty;
   if (tags.contains('쇼핑')) return PlaceCategory.shopping;
-  if (tags.contains('여행·장소')) return PlaceCategory.activity;
+  if (tags.contains('장소') || tags.contains('여행·장소')) {
+    return PlaceCategory.activity;
+  }
   return PlaceCategory.other;
 }
 

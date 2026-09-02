@@ -1,5 +1,4 @@
-const LABEL_PATTERN =
-  "^[가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+(?:[ ·ㆍ&/+＋~-][가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9]+)*$";
+import { TAG_PATTERN_SOURCE } from "./tag_key.js";
 
 const citations = {
   type: "array",
@@ -24,7 +23,7 @@ function webLabel(values = null) {
             type: "string",
             minLength: 2,
             maxLength: 20,
-            pattern: LABEL_PATTERN,
+            pattern: TAG_PATTERN_SOURCE,
           },
       confidence: { type: "number", minimum: 0, maximum: 1 },
       citations,

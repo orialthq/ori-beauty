@@ -256,8 +256,49 @@ test("optional candidate fields normalize to nulls and defaults", () => {
     name: "리쥬란 후기",
     folder: null,
     area: null,
-    labels: [],
+    tags: [],
     saveCount: 1,
     lastSavedAt: null,
   });
+});
+
+test("a candidate's tags are accepted and reach the prompt", async () => {
+  // The client sends `tags`; the server used to whitelist `labels`, so every
+  // real request was a 400 and the one field the prompt reads never arrived.
+  const input = validatePlanRecommendationRequest({
+    plan: { title: "성수 데이트" },
+    candidates: [
+      {
+        id: "a",
+        name: "어니언 성수",
+        folder: null,
+        area: "성수",
+        tags: [" 맛집·카페 ", "카페·디저트", ""],
+        saveCount: 2,
+        lastSavedAt: "2026-08-01T00:00:00.000Z",
+      },
+    ],
+  });
+  assert.deepEqual(input.candidates[0].tags, ["맛집·카페", "카페·디저트"]);
+
+  let sent = null;
+  const service = createRecommendationService({
+    transport: transportAnswering(groups([task()]), {
+      onRequest: (body) => (sent = body),
+    }),
+  });
+  await service.recommend(input);
+
+  assert.match(sent.input[0].content[0].text, /태그=맛집·카페·카페·디저트/);
+});
+
+test("a candidate still carrying `labels` is rejected as an unknown field", () => {
+  assert.throws(
+    () =>
+      validatePlanRecommendationRequest({
+        plan: { title: "성수 데이트" },
+        candidates: [{ id: "a", name: "어니언 성수", labels: ["뷰티"] }],
+      }),
+    /지원하지 않는 필드/,
+  );
 });

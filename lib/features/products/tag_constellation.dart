@@ -36,6 +36,15 @@ Size? _rememberedSize;
 /// without limit as tags are renamed and captures come and go.
 const _rememberedLimit = 3000;
 
+/// Drops what the sky remembers, so one test's layout is not the next one's.
+@visibleForTesting
+void debugForgetConstellation() {
+  _rememberedPlaces.clear();
+  _rememberedScale = null;
+  _rememberedOffset = null;
+  _rememberedSize = null;
+}
+
 /// Whether two libraries are the same one as far as the picture is concerned.
 ///
 /// Compared by what is in them rather than by list identity: the list is
@@ -139,6 +148,7 @@ final class TagConstellation extends StatefulWidget {
     required this.terms,
     required this.onOpenItem,
     required this.onToggleTag,
+    this.hinted = const {},
     super.key,
   });
 
@@ -148,6 +158,11 @@ final class TagConstellation extends StatefulWidget {
   /// them.
   final List<String> terms;
 
+  /// Tags the typed words reach through the sense dictionary rather than by
+  /// name. Lit at half strength: a guess shown as a guess, until the reader
+  /// taps the suggestion and makes it a term.
+  final Set<String> hinted;
+
   final void Function(SavedLibraryItem item) onOpenItem;
 
   /// Tapping a word writes it into the search box rather than keeping a second
@@ -155,19 +170,58 @@ final class TagConstellation extends StatefulWidget {
   final void Function(String tag) onToggleTag;
 
   @override
-  State<TagConstellation> createState() => _TagConstellationState();
+  State<TagConstellation> createState() => TagConstellationState();
 }
 
-class _TagConstellationState extends State<TagConstellation>
+/// Public only so a test can ask where a star is; nothing else should hold it.
+class TagConstellationState extends State<TagConstellation>
     with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
   final _nodes = <_Node>[];
   final _edges = <_Link>[];
 
-  /// Falls from one to nothing as the layout settles. Motion after that is the
-  /// slow breathing in the painter, not the simulation: a graph that never
-  /// stops rearranging is a graph you cannot tap.
+  /// Falls from one to nothing as the layout settles, and is pushed back up
+  /// whenever something happens to it — a search, a finger. A graph that never
+  /// stops rearranging is a graph you cannot tap, so the simulation only ever
+  /// runs down; it is woken, it is never kept awake.
   var _alpha = 1.0;
+
+  /// The star under the reader's finger, while there is one.
+  _Node? _held;
+
+  /// Whether any node is still swelling or shrinking towards what it wants to
+  /// be. The ticker cannot stop while this is true even with the layout still.
+  var _easing = false;
+
+  /// Where a node is on screen, for a test that wants to touch it.
+  @visibleForTesting
+  Offset? debugScreenPositionOf(String id) {
+    for (final node in _nodes) {
+      if (node.id == id) return Offset(node.x, node.y) * _scale + _offset;
+    }
+    return null;
+  }
+
+  /// Where a node is in the sky's own coordinates, for a test.
+  @visibleForTesting
+  Offset? debugPositionOf(String id) {
+    for (final node in _nodes) {
+      if (node.id == id) return Offset(node.x, node.y);
+    }
+    return null;
+  }
+
+  /// How large a node is drawn right now, for a test.
+  @visibleForTesting
+  double? debugSizeOf(String id) {
+    for (final node in _nodes) {
+      if (node.id == id) return node.size;
+    }
+    return null;
+  }
+
+  @visibleForTesting
+  bool get debugIsTicking => _ticker.isTicking;
 
   Size _size = Size.zero;
   double _scale = 1;
@@ -192,8 +246,11 @@ class _TagConstellationState extends State<TagConstellation>
   @override
   void initState() {
     super.initState();
+    // The ticker exists before the sky is built, because building it with a
+    // search already typed wakes it.
+    _ticker = createTicker(_tick);
     _build();
-    _ticker = createTicker(_tick)..start();
+    _wake();
   }
 
   @override
@@ -206,8 +263,32 @@ class _TagConstellationState extends State<TagConstellation>
     }
     if (!listEquals(oldWidget.terms, widget.terms)) {
       _peeked = null;
+      _relight();
       _flyToAnswer();
     }
+  }
+
+  /// Tells every node how much it is what was asked, and wakes the sky so the
+  /// answer can gather.
+  ///
+  /// A search here does not only light the answer, it pulls it together: the
+  /// word swells and the things filed under it draw in around it, so what the
+  /// reader asked about becomes the biggest shape on screen and everything
+  /// else makes room. Clearing the words lets it all breathe back out.
+  void _relight() {
+    final terms = widget.terms;
+    for (final node in _nodes) {
+      final asked =
+          terms.isNotEmpty &&
+          (node.isTag
+              ? terms.any(node.label.toLowerCase().contains)
+              : itemAnswers(node.item!, terms));
+      node.wanted = asked ? 1 : 0;
+    }
+    // Enough force for the gathering to be seen, not enough to throw the sky
+    // about. It runs down from here like every other wake.
+    _alpha = math.max(_alpha, 0.35);
+    _wake();
   }
 
   @override
@@ -218,12 +299,26 @@ class _TagConstellationState extends State<TagConstellation>
   }
 
   void _tick(Duration _) {
-    if (_alpha <= 0.004 && _toScale == null) {
+    if (_alpha <= 0.004 && _toScale == null && _held == null && !_easing) {
       // Nothing is moving, so stop drawing. A still sky that repaints sixty
       // times a second is not still in any way the phone can tell, and the
       // cost of it shows up as the whole view stuttering when it is touched.
       _ticker.stop();
       return;
+    }
+    // A finger holds the simulation up while it is down. Springs have to keep
+    // pulling for the neighbours to follow the star being dragged, and letting
+    // the force run down mid-drag would leave them behind.
+    if (_held != null) _alpha = math.max(_alpha, 0.5);
+    _easing = false;
+    for (final node in _nodes) {
+      final gap = node.wanted - node.emphasis;
+      if (gap.abs() < 0.005) {
+        node.emphasis = node.wanted;
+        continue;
+      }
+      node.emphasis += gap * 0.18;
+      _easing = true;
     }
     if (_alpha > 0.004) {
       _step();
@@ -246,7 +341,9 @@ class _TagConstellationState extends State<TagConstellation>
   }
 
   void _wake() {
-    if (!_ticker.isTicking) _ticker.start();
+    // Active rather than ticking: a ticker muted by an offstage tab is still
+    // active, and starting it again would trip the assertion in start().
+    if (!_ticker.isActive) _ticker.start();
   }
 
   void _build() {
@@ -255,6 +352,7 @@ class _TagConstellationState extends State<TagConstellation>
     _alpha = 1;
     _handled = false;
     _peeked = null;
+    _held = null;
 
     final items = widget.items.length > _maxNodes
         ? widget.items.take(_maxNodes).toList(growable: false)
@@ -346,8 +444,13 @@ class _TagConstellationState extends State<TagConstellation>
         _offset = _rememberedOffset ?? _offset;
         _handled = true;
       }
+      if (widget.terms.isNotEmpty) _relight();
       return;
     }
+
+    // A search already in the box when the sky is built gathers from the
+    // start rather than a beat after.
+    if (widget.terms.isNotEmpty) _relight();
 
     // Most of the untangling happens before the first frame is drawn. Watching
     // a few hundred nodes scramble into place is not an animation, it is a
@@ -364,6 +467,10 @@ class _TagConstellationState extends State<TagConstellation>
   /// Writes the layout down so the next visit starts from it.
   void _remember() {
     if (_nodes.isEmpty) return;
+    // A gathered sky is not the sky. While a search has things drawn in around
+    // a word, the places are answers to that search, and writing them down
+    // would open the next visit with a knot around a word nobody asked for.
+    if (_nodes.any((node) => node.emphasis > 0.01)) return;
     if (_rememberedPlaces.length > _rememberedLimit) _rememberedPlaces.clear();
     for (final node in _nodes) {
       _rememberedPlaces[node.id] = Offset(node.x, node.y);
@@ -404,11 +511,15 @@ class _TagConstellationState extends State<TagConstellation>
     }
 
     for (final edge in _edges) {
-      final rest = edge.a.radius + edge.b.radius + 46;
+      // A word that was asked for pulls what is filed under it in close, and
+      // pulls harder: the gap on the line shrinks to a third and the spring
+      // stiffens with it, so the answer gathers rather than drifts together.
+      final asked = math.max(edge.a.emphasis, edge.b.emphasis);
+      final rest = edge.a.size + edge.b.size + 46 * (1 - 0.65 * asked);
       final dx = edge.b.x - edge.a.x;
       final dy = edge.b.y - edge.a.y;
       final distance = math.max(math.sqrt(dx * dx + dy * dy), 0.01);
-      final pull = (distance - rest) * spring * scale;
+      final pull = (distance - rest) * spring * (1 + 1.5 * asked) * scale;
       edge.a.vx += dx / distance * pull;
       edge.a.vy += dy / distance * pull;
       edge.b.vx -= dx / distance * pull;
@@ -416,6 +527,13 @@ class _TagConstellationState extends State<TagConstellation>
     }
 
     for (final node in _nodes) {
+      if (node.held) {
+        // The finger is the only force on a held star. It sits exactly where
+        // it was put, and its neighbours do the moving.
+        node.vx = 0;
+        node.vy = 0;
+        continue;
+      }
       node.vx -= node.x * gravity * scale;
       node.vy -= node.y * gravity * scale;
       node.vx *= 0.86;
@@ -446,7 +564,7 @@ class _TagConstellationState extends State<TagConstellation>
     final xs = list.map((node) => node.x).toList()..sort();
     final ys = list.map((node) => node.y).toList()..sort();
     final trim = list.length > 20 ? (list.length * 0.03).round() : 0;
-    final margin = list.fold<double>(0, (m, n) => math.max(m, n.radius));
+    final margin = list.fold<double>(0, (m, n) => math.max(m, n.size));
     final left = xs[trim] - margin;
     final right = xs[xs.length - 1 - trim] + margin;
     final top = ys[trim] - margin;
@@ -512,22 +630,63 @@ class _TagConstellationState extends State<TagConstellation>
     }
     // Visible but a speck is not really visible. Anything smaller than this
     // is worth flying to even though it is technically on screen.
-    return lit.every((node) => node.radius * _scale >= 4);
+    return lit.every((node) => node.size * _scale >= 4);
   }
 
-  void _tap(Offset local) {
-    if (_scale == 0) return;
+  /// The star under a point on screen, if any.
+  _Node? _hit(Offset local) {
+    if (_scale == 0) return null;
     final point = (local - _offset) / _scale;
     _Node? hit;
     var best = double.infinity;
     for (final node in _nodes) {
       final distance = (Offset(node.x, node.y) - point).distance;
       // A generous target in screen terms, so a far-out sky is still tappable.
-      if (distance < node.radius + 14 / _scale && distance < best) {
+      if (distance < node.size + 14 / _scale && distance < best) {
         best = distance;
         hit = node;
       }
     }
+    return hit;
+  }
+
+  /// Picks a star up. From here until [_drop] it goes where the finger goes.
+  void _grab(_Node node) {
+    _held = node..held = true;
+    node.vx = 0;
+    node.vy = 0;
+    _alpha = math.max(_alpha, 0.5);
+    // The camera stops fitting the sky to the screen the moment a star is
+    // held. Left on, every frame would re-centre the whole sky around the
+    // star being moved, and what the hand sees is the sky sliding rather
+    // than the star coming along. Searches still fly: that is not gated on
+    // this.
+    _handled = true;
+    _wake();
+  }
+
+  /// Puts it down where it is. The sky around it is still awake and settles
+  /// around the new place, and once it has, that is the place it is kept.
+  void _drop() {
+    if (_held == null) return;
+    _held?.held = false;
+    _held = null;
+    // Enough left in the springs for the neighbours to finish arriving, even
+    // after a flick too quick for a frame to have run while it was held.
+    _alpha = math.max(_alpha, 0.35);
+    _wake();
+  }
+
+  /// Where the finger last went down, before any gesture claimed it.
+  ///
+  /// A drag is only recognised after the finger has moved a little, and the
+  /// point it then reports is that little way from where it touched. Hitting
+  /// stars from there misses small ones the finger was squarely on, so the
+  /// raw touch is kept and used instead.
+  Offset _downAt = Offset.zero;
+
+  void _tap(Offset local) {
+    final hit = _hit(local);
     if (hit == null) {
       setState(() => _peeked = null);
       return;
@@ -542,8 +701,15 @@ class _TagConstellationState extends State<TagConstellation>
     if (_peeked == hit.id) {
       widget.onOpenItem(hit.item!);
     } else {
-      setState(() => _peeked = hit!.id);
+      setState(() => _peeked = hit.id);
     }
+  }
+
+  void _beginPan(Offset focal) {
+    _gestureScale = _scale;
+    _gestureOffset = _offset;
+    _gestureFocal = focal;
+    _handled = true;
   }
 
   @override
@@ -555,35 +721,59 @@ class _TagConstellationState extends State<TagConstellation>
           _size = size;
           _frame(_nodes, now: true);
         }
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTapUp: (details) => _tap(details.localPosition),
-          onScaleStart: (details) {
-            _gestureScale = _scale;
-            _gestureOffset = _offset;
-            _gestureFocal = details.localFocalPoint;
-            _toScale = null;
-            _toOffset = null;
-            _handled = true;
-          },
-          onScaleUpdate: (details) {
-            setState(() {
-              final scale = (_gestureScale * details.scale).clamp(0.12, 3.0);
-              // Keep whatever was under the fingers under the fingers.
-              final anchor = (_gestureFocal - _gestureOffset) / _gestureScale;
-              _scale = scale;
-              _offset = details.localFocalPoint - anchor * scale;
-            });
-          },
-          child: CustomPaint(
-            size: size,
-            painter: _ConstellationPainter(
-              nodes: _nodes,
-              edges: _edges,
-              scale: _scale,
-              offset: _offset,
-              terms: widget.terms,
-              peeked: _peeked,
+        return Listener(
+          onPointerDown: (event) => _downAt = event.localPosition,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapUp: (details) => _tap(details.localPosition),
+            onScaleStart: (details) {
+              _toScale = null;
+              _toOffset = null;
+              // A finger that lands on a star picks the star up; one that
+              // lands on the sky moves the sky.
+              final star = details.pointerCount == 1 ? _hit(_downAt) : null;
+              if (star != null) {
+                _grab(star);
+                return;
+              }
+              _beginPan(details.localFocalPoint);
+            },
+            onScaleUpdate: (details) {
+              if (_held case final star?) {
+                if (details.pointerCount > 1) {
+                  // A second finger means a pinch, not a drag. Let go and pinch.
+                  _drop();
+                  _beginPan(details.localFocalPoint);
+                  return;
+                }
+                final point = (details.localFocalPoint - _offset) / _scale;
+                star
+                  ..x = point.dx
+                  ..y = point.dy;
+                _wake();
+                return;
+              }
+              setState(() {
+                final scale = (_gestureScale * details.scale).clamp(0.12, 3.0);
+                // Keep whatever was under the fingers under the fingers.
+                final anchor = (_gestureFocal - _gestureOffset) / _gestureScale;
+                _scale = scale;
+                _offset = details.localFocalPoint - anchor * scale;
+              });
+            },
+            onScaleEnd: (_) => _drop(),
+            child: CustomPaint(
+              size: size,
+              painter: _ConstellationPainter(
+                nodes: _nodes,
+                edges: _edges,
+                scale: _scale,
+                offset: _offset,
+                terms: widget.terms,
+                hinted: widget.hinted,
+                peeked: _peeked,
+                held: _held?.id,
+              ),
             ),
           ),
         );
@@ -600,22 +790,39 @@ final class _Node {
     required this.radius,
     required this.recency,
     this.item,
-  }) : phase = id.hashCode % 628 / 100;
+  });
 
   final String id;
   final String label;
   final bool isTag;
+
+  /// How big the node is at rest. What it is drawn at is [size].
   final double radius;
   final double recency;
   final SavedLibraryItem? item;
-
-  /// So every node breathes and twinkles out of step with its neighbours.
-  final double phase;
 
   double x = 0;
   double y = 0;
   double vx = 0;
   double vy = 0;
+
+  /// How much this node is what the reader asked about, from nothing to all
+  /// of it. Eases towards [wanted] a little every tick rather than jumping,
+  /// which is what makes a word swell when it is searched for instead of
+  /// popping to a new size.
+  double emphasis = 0;
+  double wanted = 0;
+
+  /// Pinned under the reader's finger. A held node ignores every force and
+  /// goes where the finger goes; everything hanging off it follows through the
+  /// springs, which is the whole point of being able to pick one up.
+  bool held = false;
+
+  /// The radius the node is drawn and reckoned at right now. A word that was
+  /// asked for grows to most of double, and the things that answer grow a
+  /// little too, so the answer is the largest thing on screen — not only the
+  /// brightest.
+  double get size => radius * (1 + (isTag ? 0.8 : 0.5) * emphasis);
 }
 
 final class _Link {
@@ -645,7 +852,9 @@ final class _ConstellationPainter extends CustomPainter {
     required this.scale,
     required this.offset,
     required this.terms,
+    required this.hinted,
     required this.peeked,
+    required this.held,
   }) : _asked = terms.isNotEmpty || peeked != null {
     // The largest handful always keep their names, at any zoom. A map with no
     // words on it is not a map, and these are the ones that got large by being
@@ -674,7 +883,15 @@ final class _ConstellationPainter extends CustomPainter {
   final double scale;
   final Offset offset;
   final List<String> terms;
+
+  /// Tag names reached through the sense dictionary — lit as context, not as
+  /// answers, because nothing has been confirmed yet.
+  final Set<String> hinted;
   final String? peeked;
+
+  /// The star under the reader's finger, drawn with a ring so the hand knows
+  /// it has hold of something.
+  final String? held;
 
   final bool _asked;
 
@@ -694,7 +911,10 @@ final class _ConstellationPainter extends CustomPainter {
       // A peeked star hands the reader its own words, lit brightly, because
       // recovering the word is the point of touching it.
       if (peeked != null && _nearby.contains(node.label)) return _Light.full;
-      return _nearby.contains(node.label) ? _Light.context : _Light.away;
+      if (_nearby.contains(node.label) || hinted.contains(node.label)) {
+        return _Light.context;
+      }
+      return _Light.away;
     }
     return _answering.contains(node.id) ? _Light.full : _Light.away;
   }
@@ -711,9 +931,11 @@ final class _ConstellationPainter extends CustomPainter {
   /// static: nothing holds still long enough to be read, and none of the
   /// movement carries anything. Drifting them together is calmer but no more
   /// meaningful. So they keep their places, and the only things that move are
-  /// the ones that mean something — the layout easing in when it is new, and
-  /// the camera going to what a search found. When this view moves, it is
-  /// because something happened.
+  /// the ones that mean something — the layout easing in when it is new, the
+  /// camera going to what a search found, a word swelling and gathering what
+  /// hangs off it when it is asked for, and a star going where a finger takes
+  /// it with its neighbours in tow. When this view moves, it is because
+  /// something happened, and most of the time that something is the reader.
   Offset _at(_Node node) => Offset(node.x, node.y) * scale + offset;
 
   @override
@@ -738,9 +960,21 @@ final class _ConstellationPainter extends CustomPainter {
       } else {
         _paintItem(canvas, node, strength);
       }
+      if (node.id == held) _paintHeld(canvas, node);
     }
 
     _paintLabels(canvas);
+  }
+
+  void _paintHeld(Canvas canvas, _Node node) {
+    canvas.drawCircle(
+      _at(node),
+      node.size * scale + 6,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = AppTheme.ink.withValues(alpha: 0.7),
+    );
   }
 
   /// Names as many nodes as can be read, and no more.
@@ -766,7 +1000,7 @@ final class _ConstellationPainter extends CustomPainter {
                 node.isTag &&
                 !_anchors.contains(node.id) &&
                 !_isAnswer(node) &&
-                node.radius * scale >= _namesItselfAt,
+                node.size * scale >= _namesItselfAt,
           )
           .toList()
         ..sort((a, b) => b.radius.compareTo(a.radius))),
@@ -778,7 +1012,7 @@ final class _ConstellationPainter extends CustomPainter {
       _paintLabel(
         canvas,
         node.label,
-        _at(node) + Offset(0, node.radius * scale + 7),
+        _at(node) + Offset(0, node.size * scale + 7),
         _strength(light),
         answer: !node.isTag,
         placed: placed,
@@ -790,16 +1024,19 @@ final class _ConstellationPainter extends CustomPainter {
 
   void _paintTag(Canvas canvas, _Node node, double strength) {
     final centre = _at(node);
-    final radius = node.radius * scale;
+    final radius = node.size * scale;
     // Only the hubs glow. Fifty small words each carrying a halo add up to a
     // green wash with no structure in it — the bloom has to be rationed to the
-    // few nodes it is actually saying something about.
+    // few nodes it is actually saying something about. A word that was asked
+    // for blooms brighter as it swells, so the growing reads as lighting up.
     if (radius >= 7) {
       canvas.drawCircle(
         centre,
         radius * 2.1,
         Paint()
-          ..color = AppTheme.primary.withValues(alpha: 0.07 * strength)
+          ..color = AppTheme.primary.withValues(
+            alpha: (0.07 + 0.12 * node.emphasis) * strength,
+          )
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10),
       );
     }
@@ -812,7 +1049,7 @@ final class _ConstellationPainter extends CustomPainter {
 
   void _paintItem(Canvas canvas, _Node node, double strength) {
     final centre = _at(node);
-    final radius = node.radius * scale;
+    final radius = node.size * scale;
     // Recency reads as light rather than position: a thing saved this morning
     // sits wherever its tags put it and simply burns brighter.
     final glow = 0.3 + 0.7 * node.recency;

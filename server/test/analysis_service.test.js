@@ -3,7 +3,12 @@ import test from "node:test";
 import { createAnalysisService } from "../src/analysis_service.js";
 import { MODEL } from "../src/constants.js";
 import { OpenAITransportError } from "../src/errors.js";
-import { JPEG_BASE64, makeValidAnalysis } from "./fixtures.js";
+import {
+  JPEG_BASE64,
+  makeFiling,
+  makeTag,
+  makeValidAnalysis,
+} from "./fixtures.js";
 
 const input = {
   imageBase64: JPEG_BASE64,
@@ -44,8 +49,11 @@ test("builds the stateless original-detail Luna request and parses output", asyn
 
   assert.equal(result.contentKind, "recipe");
   assert.deepEqual(
-    result.tags.map((tag) => tag.value),
-    ["국·찌개"],
+    result.tags.map((tag) => [tag.value, tag.facet]),
+    [
+      ["레시피", "field"],
+      ["국·찌개", "kind"],
+    ],
   );
   assert.equal(capturedBody.model, MODEL);
   assert.equal(capturedBody.store, false);
@@ -67,6 +75,75 @@ test("builds the stateless original-detail Luna request and parses output", asyn
   assert.match(capturedBody.instructions, /reusable word over inventing/);
   assert.match(capturedBody.instructions, /brand name, exact product name/);
   assert.match(capturedBody.instructions, /정리·수납/);
+  assert.match(capturedBody.instructions, /fields: what area of life/);
+  assert.match(capturedBody.instructions, /traits: a reusable property/);
+  // No library was sent, so the prompt says nothing about one.
+  assert.doesNotMatch(capturedBody.input[0].content[0].text, /이미 쓰고 있는 태그/);
+});
+
+test("shows the reader's existing tags, most used first, and nothing else", async () => {
+  let capturedBody;
+  const service = createAnalysisService({
+    transport: {
+      async createResponse(body) {
+        capturedBody = body;
+        return { output_text: JSON.stringify(makeValidAnalysis()) };
+      },
+    },
+  });
+
+  await service.analyze({
+    ...input,
+    capture: {
+      ...input.capture,
+      id: "private-capture-id",
+      sourceUrl: "https://www.instagram.com/private/post?token=do-not-forward",
+    },
+    vocabulary: [
+      { value: "성수", count: 12 },
+      { value: "맛집·카페", count: 41 },
+      { value: "스킨케어", count: 9 },
+    ],
+  });
+
+  const promptText = capturedBody.input[0].content[0].text;
+  assert.match(
+    promptText,
+    /이미 쓰고 있는 태그 \(사용 횟수\):\n맛집·카페\(41\) 성수\(12\) 스킨케어\(9\)/,
+  );
+  assert.match(capturedBody.instructions, /exact spelling/);
+  assert.doesNotMatch(promptText, /private-capture-id/);
+  assert.doesNotMatch(promptText, /private\/post/);
+  assert.doesNotMatch(promptText, /do-not-forward/);
+});
+
+test("adopts the library's spelling for a tag with the same key", async () => {
+  const service = createAnalysisService({
+    transport: {
+      async createResponse() {
+        return {
+          output_text: JSON.stringify(
+            makeValidAnalysis({
+              filing: makeFiling({
+                fields: [makeTag("뷰티", ["토너"])],
+                kinds: [makeTag("스킨 케어", ["토너", "세럼"])],
+              }),
+            }),
+          ),
+        };
+      },
+    },
+  });
+
+  const result = await service.analyze({
+    ...input,
+    vocabulary: [{ value: "스킨케어", count: 9 }],
+  });
+
+  assert.deepEqual(
+    result.tags.map((tag) => tag.value),
+    ["뷰티", "스킨케어"],
+  );
 });
 
 test("normalizes safe whitespace in a tag", async () => {
@@ -76,14 +153,14 @@ test("normalizes safe whitespace in a tag", async () => {
         return {
           output_text: JSON.stringify(
             makeValidAnalysis({
-              tags: [
+              filing: makeFiling({ kinds: [
                 {
                   observations: ["주 3회 러닝"],
                   value: "  건강   루틴  ",
                   confidence: 0.9,
                   evidenceIds: ["e1"],
                 },
-              ],
+              ] }),
             }),
           ),
         };
@@ -109,14 +186,14 @@ for (const [label, value] of [
           return {
             output_text: JSON.stringify(
               makeValidAnalysis({
-                tags: [
+                filing: makeFiling({ kinds: [
                   {
                     observations: ["메뉴"],
                     value,
                     confidence: 0.9,
                     evidenceIds: ["e1"],
                   },
-                ],
+                ] }),
               }),
             ),
           };
@@ -140,14 +217,14 @@ test("rejects an invalid tag confidence", async () => {
         return {
           output_text: JSON.stringify(
             makeValidAnalysis({
-              tags: [
+              filing: makeFiling({ kinds: [
                 {
                   observations: ["메뉴"],
                   value: "국·찌개",
                   confidence: 1.01,
                   evidenceIds: ["e1"],
                 },
-              ],
+              ] }),
             }),
           ),
         };
@@ -226,6 +303,9 @@ test("accepts an observed place with address evidence", async () => {
 test("repairs dangling evidence references and routes the result to review", async () => {
   const incompleteReferences = makeValidAnalysis({
     completeness: "complete",
+    filing: makeFiling({
+      kinds: [makeTag("국·찌개", ["된장찌개"], 0.9, ["missing", "e1"])],
+    }),
     title: {
       value: "된장찌개",
       status: "observed",
@@ -253,6 +333,7 @@ test("repairs dangling evidence references and routes the result to review", asy
   const result = await service.analyze(input);
 
   assert.deepEqual(result.title.evidenceIds, ["e1"]);
+  assert.deepEqual(result.tags[0].evidenceIds, ["e1"]);
   assert.deepEqual(result.facts[0].evidenceIds, []);
   assert.equal(result.completeness, "needs_review");
   assert.deepEqual(result.warnings, [

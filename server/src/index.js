@@ -11,6 +11,8 @@ import { createKakaoTransport } from "./kakao_transport.js";
 import { createOpenAITransport } from "./openai_transport.js";
 import { createPlaceResolutionService } from "./place_resolution_service.js";
 import { createRecommendationService } from "./recommendation_service.js";
+import { createTagMergeService } from "./tag_merge_service.js";
+import { createTagSenseService } from "./tag_sense_service.js";
 
 const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) {
@@ -69,12 +71,16 @@ if (!apiKey) {
   }
 
   const recommendationService = createRecommendationService({ transport });
+  const tagMergeService = createTagMergeService({ transport });
+  const tagSenseService = createTagSenseService({ transport });
 
   const server = createHttpServer({
     analysisService,
     enrichmentService,
     placeResolutionService,
     recommendationService,
+    tagMergeService,
+    tagSenseService,
     enrichmentModel,
   });
 

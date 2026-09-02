@@ -8,6 +8,7 @@ import '../common/shell_menu_button.dart';
 import 'all_tags_screen.dart';
 import 'capture_framing.dart';
 import 'saved_library_item.dart';
+import 'sense_match.dart';
 import 'tag_constellation.dart';
 
 /// How many tags the filter row offers before sending the reader to the full
@@ -160,25 +161,126 @@ class _ProductsScreenState extends State<ProductsScreen> {
   /// tapping into the field — a row of tags standing permanently over the sky
   /// would be a short list on top of a complete one, and would clutter the one
   /// screen whose whole point is that it is uncluttered.
-  List<String> _suggestions(List<SavedLibraryItem> items, List<String> terms) {
+  /// What the row under the search box offers, and which tags the sky should
+  /// hint at — one computation, because they are two faces of one answer.
+  ///
+  /// Name matches come first (substring and 초성, as a Korean search box is
+  /// expected to work), then what the typed words reach through the sense
+  /// dictionary: 매운거 surfaces 닭발 with the word that carried it. Sense
+  /// hits also become hints — the sky lights those tags at half strength, a
+  /// guess shown as a guess until the reader taps it into a real search.
+  (List<SkySuggestion>, Set<String>) _skyMatches(
+    List<SavedLibraryItem> items,
+    List<String> terms,
+  ) {
     final text = _query.text;
     final partial = text.endsWith(' ') || text.isEmpty ? '' : terms.last;
-    final names = <String>[];
-    for (final entry in widget.controller.tagCounts) {
-      names.add(entry.tag.value);
-    }
+    final seen = <String>{};
+    final merged = <SkySuggestion>[];
     if (partial.isEmpty) {
-      return [
-        for (final tag in recentTags(items, limit: 24))
-          if (!terms.contains(tag.toLowerCase())) tag,
-      ].take(8).toList(growable: false);
+      for (final tag in recentTags(items, limit: 24)) {
+        if (!terms.contains(tag.toLowerCase()) && seen.add(tag)) {
+          merged.add((name: tag, via: null, term: null));
+        }
+      }
+    } else {
+      for (final entry in widget.controller.tagCounts) {
+        final name = entry.tag.value;
+        if (tagNameMatches(name, partial) &&
+            name.toLowerCase() != partial &&
+            seen.add(name)) {
+          merged.add((name: name, via: null, term: partial));
+        }
+      }
     }
-    return [
-      for (final name in names)
-        if (name.toLowerCase().contains(partial) &&
-            name.toLowerCase() != partial)
-          name,
-    ].take(8).toList(growable: false);
+    final hits = senseHits(
+      terms: terms,
+      vocabulary: widget.controller.tagVocabulary,
+      senses: widget.controller.tagSenses,
+    );
+    for (final hit in hits) {
+      if (!terms.contains(hit.name.toLowerCase()) && seen.add(hit.name)) {
+        merged.add(hit);
+      }
+    }
+    // Once the typed words are exact tags, completion has nothing left to
+    // offer — what fills the row instead is where the search leads on to:
+    // the tags sharing saved things with everything already asked.
+    final companions = companionHits(
+      terms: terms,
+      filings: [
+        for (final item in items) [for (final tag in item.tags) tag.value],
+      ],
+      vocabulary: widget.controller.tagVocabulary,
+    );
+    for (final hit in companions) {
+      if (seen.add(hit.name)) merged.add(hit);
+    }
+    return (
+      merged.take(8).toList(growable: false),
+      {for (final hit in hits) hit.name},
+    );
+  }
+
+  /// A tapped suggestion becomes the search. A name match keeps the old
+  /// toggle behaviour; a sense match swaps the word that summoned it for the
+  /// tag itself — 매운거 was never going to light anything, and the reader
+  /// has just said 닭발 is what they meant by it. A companion has no word to
+  /// swap out (`term` is null), so it simply joins what is already asked:
+  /// 후암동 then 카페 narrows to the things carrying both.
+  void _pickSuggestion(SkySuggestion pick) {
+    if (pick.via == null) {
+      _toggleTerm(pick.name);
+      return;
+    }
+    final terms = constellationTerms(_query.text);
+    final kept = [
+      for (final term in terms)
+        if (term != pick.term && term != pick.name.toLowerCase()) term,
+    ];
+    setState(() {
+      _query.text = [...kept, pick.name].join(' ');
+      _query.selection = TextSelection.collapsed(offset: _query.text.length);
+    });
+  }
+
+  /// The reader striking a wrong association out of the dictionary. Only a
+  /// sense hit has an entry to strike: a companion's `via` is a tag, not a
+  /// dictionary word, and its evidence is the filing itself.
+  Future<void> _forgetSense(SkySuggestion pick) async {
+    final via = pick.via;
+    if (via == null || pick.term == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        key: const Key('sense-forget-dialog'),
+        backgroundColor: AppTheme.surfaceRaised,
+        title: const Text('연상어 빼기'),
+        content: Text(
+          "'$via'(으)로는 더 이상 ${pick.name}을(를) 찾지 않게 돼요.",
+          style: const TextStyle(
+            color: AppTheme.muted,
+            fontSize: 14,
+            height: 1.5,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('취소'),
+          ),
+          TextButton(
+            key: const Key('sense-forget-confirm'),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('빼기'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await widget.controller.removeTagSense(pick.name, via);
+      if (mounted) setState(() {});
+    }
   }
 
   /// Adds or removes one word from what the reader is asking the sky.
@@ -257,6 +359,9 @@ class _ProductsScreenState extends State<ProductsScreen> {
         final filtered = _untaggedOnly || _selected.isNotEmpty;
         final sky = _view == LibraryView.constellation;
         final terms = constellationTerms(_query.text);
+        final (suggestions, hinted) = sky
+            ? _skyMatches(items, terms)
+            : (const <SkySuggestion>[], const <String>{});
 
         return Column(
           children: [
@@ -280,9 +385,10 @@ class _ProductsScreenState extends State<ProductsScreen> {
               _SkySearch(
                 controller: _query,
                 focusNode: _queryFocus,
-                suggestions: _suggestions(items, terms),
+                suggestions: suggestions,
                 onChanged: (_) => setState(() {}),
-                onPick: _toggleTerm,
+                onPick: _pickSuggestion,
+                onForget: _forgetSense,
                 onOpenAll: _openAllTags,
               )
             else
@@ -301,6 +407,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
                       key: const Key('library-constellation'),
                       items: items,
                       terms: terms,
+                      hinted: hinted,
                       onOpenItem: _open,
                       onToggleTag: _toggleTerm,
                     )
@@ -444,14 +551,19 @@ final class _SkySearch extends StatelessWidget {
     required this.suggestions,
     required this.onChanged,
     required this.onPick,
+    required this.onForget,
     required this.onOpenAll,
   });
 
   final TextEditingController controller;
   final FocusNode focusNode;
-  final List<String> suggestions;
+  final List<SkySuggestion> suggestions;
   final ValueChanged<String> onChanged;
-  final void Function(String tag) onPick;
+  final void Function(SkySuggestion pick) onPick;
+
+  /// Long-pressing a sense suggestion strikes the association out. The
+  /// dictionary was written by a model; the reader is how it gets corrected.
+  final void Function(SkySuggestion pick) onForget;
   final VoidCallback onOpenAll;
 
   @override
@@ -508,21 +620,40 @@ final class _SkySearch extends StatelessWidget {
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
                 children: [
-                  for (final tag in suggestions) ...[
+                  for (final pick in suggestions) ...[
                     Material(
-                      key: Key('library-sky-suggestion-$tag'),
+                      key: Key('library-sky-suggestion-${pick.name}'),
                       color: AppTheme.fill,
                       shape: const StadiumBorder(
                         side: BorderSide(color: AppTheme.border),
                       ),
                       clipBehavior: Clip.antiAlias,
                       child: InkWell(
-                        onTap: () => onPick(tag),
+                        onTap: () => onPick(pick),
+                        onLongPress: pick.via == null || pick.term == null
+                            ? null
+                            : () => onForget(pick),
                         child: Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 14),
                           child: Center(
-                            child: Text(
-                              tag,
+                            // A sense suggestion says which typed word
+                            // summoned it — 닭발 ← 매운 — because a suggestion
+                            // that cannot say why cannot be judged, and
+                            // judging it is how the dictionary gets fixed.
+                            child: Text.rich(
+                              TextSpan(
+                                children: [
+                                  TextSpan(text: pick.name),
+                                  if (pick.via != null)
+                                    TextSpan(
+                                      text: ' ← ${pick.via}',
+                                      style: const TextStyle(
+                                        color: AppTheme.subtle,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                ],
+                              ),
                               style: const TextStyle(
                                 color: AppTheme.ink,
                                 fontSize: 13,

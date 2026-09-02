@@ -3,6 +3,7 @@ import {
   SUPPORTED_IMAGE_TYPES,
 } from "./constants.js";
 import { AppError } from "./errors.js";
+import { normalizeTagValue, tagKey } from "./tag_key.js";
 
 const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
 const LOCALE_PATTERN = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
@@ -124,6 +125,131 @@ export function validateResolvePlaceRequest(body) {
   };
 }
 
+/// The most words one request can describe the library with.
+///
+/// A library with more distinct tags than this is not one the prompt should
+/// try to reproduce; the client sends the most used ones. The bound stops a
+/// runaway payload, not a real library.
+const MAX_VOCABULARY_ENTRIES = 300;
+
+/// The reader's existing tags, as `{value, count}` pairs.
+///
+/// Values are held to the same rule as a tag the model emits, so the prompt can
+/// never carry a sentence or a URL dressed as a tag. Two entries whose
+/// `tagKey` is equal are one word spelled two ways; whether they are collapsed
+/// depends on who is asking. The analysis prompt wants one spelling per word,
+/// and keeps the first. The librarian wants to see both, because pairing them
+/// is its job.
+function validateVocabulary(
+  raw,
+  path,
+  { required = false, minEntries = 0, collapseKeys = true } = {},
+) {
+  if (raw === undefined || raw === null) {
+    if (required) {
+      throw new AppError("INVALID_REQUEST", `${path}가 필요해요.`, {
+        httpStatus: 400,
+      });
+    }
+    return [];
+  }
+  if (!Array.isArray(raw)) {
+    throw new AppError(
+      "INVALID_REQUEST",
+      `${path} 형식이 올바르지 않아요.`,
+      { httpStatus: 400 },
+    );
+  }
+  if (raw.length > MAX_VOCABULARY_ENTRIES) {
+    throw new AppError(
+      "INVALID_REQUEST",
+      `${path}에 보낼 수 있는 태그 수를 넘었어요.`,
+      { httpStatus: 400 },
+    );
+  }
+
+  const seenValues = new Set();
+  const seenKeys = new Set();
+  const vocabulary = [];
+  raw.forEach((entry, index) => {
+    const entryPath = `${path}[${index}]`;
+    if (!isPlainObject(entry)) {
+      throw new AppError(
+        "INVALID_REQUEST",
+        `${entryPath} 형식이 올바르지 않아요.`,
+        { httpStatus: 400 },
+      );
+    }
+    assertKeys(entry, new Set(["value", "count"]), entryPath);
+    const value = normalizeTagValue(entry.value);
+    if (value === null) {
+      throw new AppError(
+        "INVALID_REQUEST",
+        `${entryPath}.value 형식이 올바르지 않아요.`,
+        { httpStatus: 400 },
+      );
+    }
+    if (!Number.isInteger(entry.count) || entry.count < 1) {
+      throw new AppError(
+        "INVALID_REQUEST",
+        `${entryPath}.count 형식이 올바르지 않아요.`,
+        { httpStatus: 400 },
+      );
+    }
+    const key = tagKey(value);
+    if (seenValues.has(value) || (collapseKeys && seenKeys.has(key))) {
+      return;
+    }
+    seenValues.add(value);
+    seenKeys.add(key);
+    vocabulary.push({ value, count: entry.count });
+  });
+
+  if (vocabulary.length < minEntries) {
+    throw new AppError(
+      "INVALID_REQUEST",
+      `${path}에는 태그가 ${minEntries}개 이상 필요해요.`,
+      { httpStatus: 400 },
+    );
+  }
+  return vocabulary;
+}
+
+export function validateTagMergesRequest(body) {
+  if (!isPlainObject(body)) {
+    throw new AppError("INVALID_REQUEST", "요청 형식이 올바르지 않아요.", {
+      httpStatus: 400,
+    });
+  }
+  assertKeys(body, new Set(["vocabulary"]), "요청");
+  return {
+    vocabulary: validateVocabulary(body.vocabulary, "vocabulary", {
+      required: true,
+      minEntries: 2,
+      collapseKeys: false,
+    }),
+  };
+}
+
+export function validateTagSensesRequest(body) {
+  if (!isPlainObject(body)) {
+    throw new AppError("INVALID_REQUEST", "요청 형식이 올바르지 않아요.", {
+      httpStatus: 400,
+    });
+  }
+  assertKeys(body, new Set(["tags"]), "요청");
+  return {
+    // Spelling variants stay apart on purpose: the caller matches the answer
+    // back by exact tag value, so 스킨케어 and 스킨 케어 each need their own
+    // entry or one of them would come back unanswered and be asked again.
+    tags: validateVocabulary(body.tags, "tags", {
+      required: true,
+      minEntries: 1,
+      collapseKeys: false,
+    }),
+  };
+}
+
 export function validateAnalyzeRequest(
   body,
   { maxImageBytes = DEFAULT_MAX_IMAGE_BYTES } = {},
@@ -135,7 +261,7 @@ export function validateAnalyzeRequest(
       { httpStatus: 400 },
     );
   }
-  assertKeys(body, new Set(["image", "capture"]), "요청");
+  assertKeys(body, new Set(["image", "capture", "vocabulary"]), "요청");
 
   if (!isPlainObject(body.image)) {
     throw new AppError(
@@ -272,6 +398,7 @@ export function validateAnalyzeRequest(
       capturedAt: capturedAt || null,
       locale: locale || null,
     },
+    vocabulary: validateVocabulary(body.vocabulary, "vocabulary"),
   };
 }
 
@@ -344,7 +471,7 @@ export function validatePlanRecommendationRequest(body) {
         "name",
         "folder",
         "area",
-        "labels",
+        "tags",
         "saveCount",
         "lastSavedAt",
       ]),
@@ -383,21 +510,19 @@ export function validatePlanRecommendationRequest(body) {
       64,
     );
 
-    let labels = [];
-    if (raw.labels !== undefined && raw.labels !== null) {
+    let tags = [];
+    if (raw.tags !== undefined && raw.tags !== null) {
       if (
-        !Array.isArray(raw.labels) ||
-        raw.labels.some(
-          (label) => typeof label !== "string" || label.length > 60,
-        )
+        !Array.isArray(raw.tags) ||
+        raw.tags.some((tag) => typeof tag !== "string" || tag.length > 60)
       ) {
         throw new AppError(
           "INVALID_REQUEST",
-          `candidates[${index}].labels 형식이 올바르지 않아요.`,
+          `candidates[${index}].tags 형식이 올바르지 않아요.`,
           { httpStatus: 400 },
         );
       }
-      labels = raw.labels.map((label) => label.trim()).filter(Boolean);
+      tags = raw.tags.map((tag) => tag.trim()).filter(Boolean);
     }
 
     let saveCount = 1;
@@ -417,7 +542,7 @@ export function validatePlanRecommendationRequest(body) {
       name,
       folder: raw.folder ?? null,
       area: raw.area ?? null,
-      labels,
+      tags,
       saveCount,
       lastSavedAt: raw.lastSavedAt ?? null,
     };

@@ -833,11 +833,18 @@ final class _ToggleAppSnapshotStore implements AppSnapshotStore {
   Future<List<PersistedCapture>> load() => _delegate.load();
 
   @override
-  Future<void> save(List<PersistedCapture> captures) {
+  Future<Map<String, List<String>>> loadTagSenses() =>
+      _delegate.loadTagSenses();
+
+  @override
+  Future<void> save(
+    List<PersistedCapture> captures, {
+    Map<String, List<String>> tagSenses = const {},
+  }) {
     if (failWrites) {
       throw StateError('simulated durable write failure');
     }
-    return _delegate.save(captures);
+    return _delegate.save(captures, tagSenses: tagSenses);
   }
 }
 
@@ -848,7 +855,13 @@ final class _FailingAppSnapshotStore implements AppSnapshotStore {
   Future<List<PersistedCapture>> load() async => const [];
 
   @override
-  Future<void> save(List<PersistedCapture> captures) async {
+  Future<Map<String, List<String>>> loadTagSenses() async => const {};
+
+  @override
+  Future<void> save(
+    List<PersistedCapture> captures, {
+    Map<String, List<String>> tagSenses = const {},
+  }) async {
     throw StateError('simulated durable write failure');
   }
 }

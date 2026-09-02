@@ -55,7 +55,7 @@ export function createAnalysisService({
           });
         }
         return applyDeterministicCompletenessGuards(
-          validateAnalysisResult(parsed),
+          validateAnalysisResult(parsed, { vocabulary: input.vocabulary }),
         );
       } catch (error) {
         if (

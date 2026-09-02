@@ -13,6 +13,8 @@ import {
   validateEnrichPlaceRequest,
   validatePlanRecommendationRequest,
   validateResolvePlaceRequest,
+  validateTagMergesRequest,
+  validateTagSensesRequest,
 } from "./request_validation.js";
 
 export function createHttpServer({
@@ -20,6 +22,8 @@ export function createHttpServer({
   enrichmentService = null,
   placeResolutionService = null,
   recommendationService = null,
+  tagMergeService = null,
+  tagSenseService = null,
   // Reported by /health so a comparison run can confirm which provider answered
   // rather than inferring it from the labels.
   enrichmentModel = MODEL,
@@ -44,6 +48,12 @@ export function createHttpServer({
     typeof recommendationService.recommend !== "function"
   ) {
     throw new Error("A recommendationService must expose recommend()");
+  }
+  if (tagMergeService && typeof tagMergeService.merge !== "function") {
+    throw new Error("A tagMergeService must expose merge()");
+  }
+  if (tagSenseService && typeof tagSenseService.describe !== "function") {
+    throw new Error("A tagSenseService must expose describe()");
   }
 
   return createServer(async (request, response) => {
@@ -78,10 +88,93 @@ export function createHttpServer({
         const input = validateAnalyzeRequest(body, { maxImageBytes });
         const result = await analysisService.analyze(input);
         if (process.env.TRUN_ON_DEBUG_LOG === "1") {
+          // Opt-in and local only. Counts per facet, never the words: a tag is
+          // the reader's own vocabulary once it lands in their library.
+          const facets = {};
+          for (const tag of result.tags) {
+            facets[tag.facet] = (facets[tag.facet] ?? 0) + 1;
+          }
           console.log(
-            `[analyze] place=${result.place.name ?? "-"} ` +
-              `area=${result.place.searchArea ?? "-"} ` +
-              `kind=${result.axes.kind.map((l) => l.value).join("|") || "-"}`,
+            `[analyze] kind=${result.contentKind} ` +
+              `place=${result.place.name === null ? "no" : "yes"} ` +
+              `tags=${result.tags.length} ` +
+              `facets=${
+                Object.entries(facets)
+                  .map(([facet, count]) => `${facet}:${count}`)
+                  .join("|") || "-"
+              }`,
+          );
+        }
+        return sendJson(response, 200, result);
+      }
+
+      if (url.pathname === "/v1/tag-merges") {
+        if (request.method !== "POST") {
+          throw methodNotAllowed("POST");
+        }
+        if (!tagMergeService) {
+          throw new AppError(
+            "TAG_MERGES_NOT_CONFIGURED",
+            "태그 정리를 사용할 수 없어요.",
+            { httpStatus: 503 },
+          );
+        }
+        assertJsonContentType(request.headers["content-type"]);
+        const body = await readJsonBody(request, {
+          // 300 entries of 20 characters and a count fit in a few KiB; the
+          // rest is headroom, not an invitation.
+          maxBodyBytes: Math.min(maxBodyBytes, 32 * 1024),
+          timeoutMs: bodyTimeoutMs,
+        });
+        const input = validateTagMergesRequest(body);
+        // No pairs is the normal answer for a tidy library, so this is a 200
+        // whenever the call ran at all.
+        const result = await tagMergeService.merge(input);
+        if (process.env.TRUN_ON_DEBUG_LOG === "1") {
+          console.log(
+            `[tag-merges] 태그=${input.vocabulary.length} ` +
+              `합침=${result.merges.length}`,
+          );
+        }
+        return sendJson(response, 200, result);
+      }
+
+      if (url.pathname === "/v1/tag-senses") {
+        if (request.method !== "POST") {
+          throw methodNotAllowed("POST");
+        }
+        if (!tagSenseService) {
+          throw new AppError(
+            "TAG_SENSES_NOT_CONFIGURED",
+            "검색 낱말 생성을 사용할 수 없어요.",
+            { httpStatus: 503 },
+          );
+        }
+        assertJsonContentType(request.headers["content-type"]);
+        const body = await readJsonBody(request, {
+          // Same arithmetic as tag-merges: 300 tags of 20 characters and a
+          // count fit in a few KiB; the rest is headroom, not an invitation.
+          maxBodyBytes: Math.min(maxBodyBytes, 32 * 1024),
+          timeoutMs: bodyTimeoutMs,
+        });
+        const input = validateTagSensesRequest(body);
+        // Always a 200 when the call ran, and every requested tag appears in
+        // `senses` even with zero words: the caller caches "asked, nothing
+        // useful" per tag, and an absent tag would be re-asked forever.
+        const result = await tagSenseService.describe(input);
+        if (process.env.TRUN_ON_DEBUG_LOG === "1") {
+          // Opt-in and local only. Counts, never the words: the dictionary is
+          // built from the reader's own vocabulary.
+          const answered = result.senses.filter(
+            (sense) => sense.words.length > 0,
+          ).length;
+          const wordCount = result.senses.reduce(
+            (total, sense) => total + sense.words.length,
+            0,
+          );
+          console.log(
+            `[tag-senses] 태그=${input.tags.length} ` +
+              `답변=${answered} 낱말=${wordCount}`,
           );
         }
         return sendJson(response, 200, result);

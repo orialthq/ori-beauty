@@ -142,7 +142,7 @@ void main() {
     expect(find.text('1 / ${groups.length}'), findsOneWidget);
   });
 
-  test('renaming a tag onto a name that exists merges the two', () async {
+  test('a second spelling of a word lands on the first', () async {
     final controller = AppController(InMemoryIncomingShareService());
     addTearDown(controller.dispose);
     await controller.initialize();
@@ -154,16 +154,39 @@ void main() {
     await controller.updateGroupTags(groups[1].id, const [
       ContentTag(value: '멕시코음식'),
     ]);
-    expect(controller.organizedCountForTag('멕시코 음식'), 1);
-    expect(controller.organizedCountForTag('멕시코음식'), 1);
 
-    await controller.renameTag('멕시코 음식', '멕시코음식');
-
-    // One word holding both, not an error and not a third tag. Until an
-    // automatic pass can judge that these are the same, the reader can.
-    expect(controller.organizedCountForTag('멕시코 음식'), 0);
-    expect(controller.organizedCountForTag('멕시코음식'), 2);
+    // Not two tags waiting for the reader to notice: one word, spelled the
+    // way the library already spelled it. There was never a decision here.
+    expect(controller.organizedCountForTag('멕시코 음식'), 2);
+    expect(controller.organizedCountForTag('멕시코음식'), 0);
   });
+
+  test(
+    'renaming a tag onto a different word that exists merges the two',
+    () async {
+      final controller = AppController(InMemoryIncomingShareService());
+      addTearDown(controller.dispose);
+      await controller.initialize();
+
+      final groups = controller.groups;
+      await controller.updateGroupTags(groups.first.id, const [
+        ContentTag(value: '멕시코 음식'),
+      ]);
+      await controller.updateGroupTags(groups[1].id, const [
+        ContentTag(value: '멕시칸'),
+      ]);
+      expect(controller.organizedCountForTag('멕시코 음식'), 1);
+      expect(controller.organizedCountForTag('멕시칸'), 1);
+
+      await controller.renameTag('멕시칸', '멕시코 음식');
+
+      // One word holding both, not an error and not a third tag. Spellings are
+      // joined on the way in; two different words that mean one thing is a
+      // judgement, and the reader is the one who makes it.
+      expect(controller.organizedCountForTag('멕시칸'), 0);
+      expect(controller.organizedCountForTag('멕시코 음식'), 2);
+    },
+  );
 
   test('a renamed tag becomes the reader’s own', () async {
     final controller = AppController(InMemoryIncomingShareService());
@@ -238,6 +261,127 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+    'a star goes where the finger takes it, and its neighbours follow',
+    (tester) async {
+      await _pumpSky(tester, terms: const []);
+      final sky = tester.state<TagConstellationState>(
+        find.byType(TagConstellation),
+      );
+      final hubBefore = sky.debugPositionOf('tag:맛집·카페')!;
+      final starBefore = sky.debugPositionOf('item:a')!;
+      final onScreen = sky.debugScreenPositionOf('tag:맛집·카페')!;
+
+      await tester.dragFrom(onScreen, const Offset(120, 0));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // The word went right, a good part of the way the finger did — the hand
+      // is the only thing that moves a held star, and once let go the springs
+      // take a little of it back.
+      final hubAfter = sky.debugPositionOf('tag:맛집·카페')!;
+      expect(hubAfter.dx - hubBefore.dx, greaterThan(30));
+      // And the thing filed under it came along, because it is on a spring.
+      final starAfter = sky.debugPositionOf('item:a')!;
+      expect(starAfter.dx, greaterThan(starBefore.dx));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('a held star stays under the finger while the sky is still new', (
+    tester,
+  ) async {
+    // A fresh sky is still fitting itself to the screen every frame. Holding
+    // a star has to switch that off, or each frame re-centres the whole sky
+    // around the star and the hand sees the sky slide instead of the star
+    // come along — which reads as "dragging does nothing".
+    await _pumpSky(tester, terms: const []);
+    final sky = tester.state<TagConstellationState>(
+      find.byType(TagConstellation),
+    );
+    final start = sky.debugScreenPositionOf('tag:맛집·카페')!;
+
+    final finger = await tester.startGesture(start);
+    await finger.moveBy(const Offset(40, 0));
+    await tester.pump();
+    await finger.moveBy(const Offset(80, 20));
+    for (var frame = 0; frame < 30; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+
+    final under = sky.debugScreenPositionOf('tag:맛집·카페')!;
+    final fingerAt = start + const Offset(120, 20);
+    expect((under - fingerAt).distance, lessThan(2));
+
+    await finger.up();
+    await tester.pump();
+  });
+
+  testWidgets('a finger on empty sky moves the sky, not the stars', (
+    tester,
+  ) async {
+    await _pumpSky(tester, terms: const []);
+    final sky = tester.state<TagConstellationState>(
+      find.byType(TagConstellation),
+    );
+    final before = {for (final id in _nodeIds) id: sky.debugPositionOf(id)!};
+    final onScreenBefore = sky.debugScreenPositionOf('tag:스킨케어')!;
+
+    await tester.dragFrom(const Offset(4, 4), const Offset(80, 40));
+    await tester.pump();
+
+    // Nothing in the sky's own coordinates changed; the camera did. Less than
+    // the whole drag, because the first little way is spent deciding it is a
+    // drag at all.
+    for (final id in _nodeIds) {
+      expect(sky.debugPositionOf(id), before[id], reason: id);
+    }
+    final moved = sky.debugScreenPositionOf('tag:스킨케어')! - onScreenBefore;
+    expect(moved.dx, greaterThan(40));
+    expect(moved.dy, greaterThan(20));
+    expect(moved.dx / moved.dy, closeTo(2, 0.05));
+  });
+
+  testWidgets('asking for a word swells it and gathers what hangs off it', (
+    tester,
+  ) async {
+    await _pumpSky(tester, terms: const []);
+    final sky = tester.state<TagConstellationState>(
+      find.byType(TagConstellation),
+    );
+    final restSize = sky.debugSizeOf('tag:맛집·카페')!;
+    double apart(String item) =>
+        (sky.debugPositionOf(item)! - sky.debugPositionOf('tag:맛집·카페')!)
+            .distance;
+    final aBefore = apart('item:a');
+    final bBefore = apart('item:b');
+
+    await _pumpSky(tester, terms: const ['맛집']);
+    for (var frame = 0; frame < 120; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+
+    // The word is most of the way to double, and the two places under it
+    // have drawn in. That is what a search looks like here: not a shorter
+    // list, a bigger shape.
+    expect(sky.debugSizeOf('tag:맛집·카페'), greaterThan(restSize * 1.6));
+    expect(apart('item:a'), lessThan(aBefore));
+    expect(apart('item:b'), lessThan(bBefore));
+    // What was not asked for stays its size.
+    expect(sky.debugSizeOf('tag:스킨케어'), 5 + 5 * 1.0);
+
+    await _pumpSky(tester, terms: const []);
+    for (var frame = 0; frame < 240; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+
+    // Let go of the word and it breathes back out, and once nothing is
+    // moving the sky stops drawing.
+    expect(sky.debugSizeOf('tag:맛집·카페'), closeTo(restSize, 0.05));
+    expect(sky.debugIsTicking, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
   test('two words in the sky multiply, they do not add', () {
     final items = _library();
 
@@ -264,6 +408,69 @@ void main() {
       items.where((item) => itemAnswers(item, constellationTerms('  '))),
       hasLength(items.length),
     );
+  });
+
+  testWidgets('an asked tag offers its companions, and a tap stacks them', (
+    tester,
+  ) async {
+    final controller = AppController(InMemoryIncomingShareService());
+    addTearDown(controller.dispose);
+    await controller.initialize();
+
+    final groups = controller.groups;
+    await controller.updateGroupTags(groups.first.id, const [
+      ContentTag(value: '후암동'),
+      ContentTag(value: '카페'),
+    ]);
+    await controller.updateGroupTags(groups[1].id, const [
+      ContentTag(value: '후암동'),
+      ContentTag(value: '혼밥'),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.dark,
+        home: Scaffold(
+          backgroundColor: AppTheme.background,
+          body: ProductsScreen(controller: controller),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('library-view-toggle')));
+    await tester.pump();
+
+    await tester.enterText(find.byKey(const Key('library-sky-search')), '후암동');
+    await tester.pump();
+
+    // The word is a finished tag, so completion has nothing to say — the row
+    // holds what the search leads on to, each chip naming what carried it.
+    expect(find.byKey(const Key('library-sky-suggestion-카페')), findsOneWidget);
+    expect(find.byKey(const Key('library-sky-suggestion-혼밥')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('library-sky-suggestion-카페')));
+    await tester.pump();
+
+    // Added, not swapped: the reader is narrowing 후암동, not leaving it.
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('library-sky-search')))
+          .controller!
+          .text,
+      '후암동 카페',
+    );
+
+    // And the row moves on with the search: nothing carries both 후암동 and
+    // 카페 besides the one place, so 혼밥 has stopped being an answer.
+    expect(find.byKey(const Key('library-sky-suggestion-혼밥')), findsNothing);
+
+    // A companion has no dictionary entry behind it, so there is nothing to
+    // strike out and a long press opens no forget dialog.
+    await tester.enterText(find.byKey(const Key('library-sky-search')), '후암동');
+    await tester.pump();
+    await tester.longPress(find.byKey(const Key('library-sky-suggestion-혼밥')));
+    await tester.pump();
+    expect(find.byKey(const Key('sense-forget-dialog')), findsNothing);
   });
 
   test('a half-typed word resolves to the tag it can only mean', () {
@@ -328,6 +535,49 @@ void main() {
     expect(tagSectionOf('cafe'), 'C');
     expect(tagSectionOf('1인분'), '#');
   });
+}
+
+/// Every star and word in [_library], by the ids the sky gives them.
+const _nodeIds = [
+  'tag:맛집·카페',
+  'tag:을지로',
+  'tag:문래',
+  'tag:스킨케어',
+  'item:a',
+  'item:b',
+  'item:c',
+  'item:d',
+];
+
+/// The sky over [_library], left long enough to settle.
+///
+/// Forgets the layout an earlier test left behind when it opens a fresh sky,
+/// because the sky remembers between visits on purpose and a test that
+/// inherited a dragged-about layout would be testing the last test.
+Future<void> _pumpSky(
+  WidgetTester tester, {
+  required List<String> terms,
+}) async {
+  if (find.byType(TagConstellation).evaluate().isEmpty) {
+    debugForgetConstellation();
+  }
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: AppTheme.dark,
+      home: Scaffold(
+        backgroundColor: AppTheme.background,
+        body: TagConstellation(
+          items: _library(),
+          terms: terms,
+          onOpenItem: (_) {},
+          onToggleTag: (_) {},
+        ),
+      ),
+    ),
+  );
+  for (var frame = 0; frame < 200; frame++) {
+    await tester.pump(const Duration(milliseconds: 16));
+  }
 }
 
 SavedLibraryItem _item(String id, String title, List<String> tags) {

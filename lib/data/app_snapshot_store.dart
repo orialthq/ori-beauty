@@ -7,7 +7,15 @@ import '../domain/models.dart';
 abstract interface class AppSnapshotStore {
   Future<List<PersistedCapture>> load();
 
-  Future<void> save(List<PersistedCapture> captures);
+  /// The stored sense dictionary: [tagKey] to the words that lead to that
+  /// tag. Kept in the same snapshot as the captures — one native slot, one
+  /// writer — and empty for a snapshot from before the dictionary existed.
+  Future<Map<String, List<String>>> loadTagSenses();
+
+  Future<void> save(
+    List<PersistedCapture> captures, {
+    Map<String, List<String>> tagSenses,
+  });
 }
 
 abstract final class _AnalysisRunCodec {
@@ -235,10 +243,22 @@ final class MethodChannelAppSnapshotStore implements AppSnapshotStore {
   }
 
   @override
-  Future<void> save(List<PersistedCapture> captures) async {
+  Future<Map<String, List<String>>> loadTagSenses() async {
+    final snapshot = await _channel.invokeMethod<String>('loadAppSnapshot');
+    if (snapshot == null || snapshot.isEmpty) {
+      return const {};
+    }
+    return AppSnapshotCodec.decodeTagSenses(snapshot);
+  }
+
+  @override
+  Future<void> save(
+    List<PersistedCapture> captures, {
+    Map<String, List<String>> tagSenses = const {},
+  }) async {
     final saved = await _channel.invokeMethod<bool>(
       'saveAppSnapshot',
-      AppSnapshotCodec.encode(captures),
+      AppSnapshotCodec.encode(captures, tagSenses: tagSenses),
     );
     if (saved != true) {
       throw StateError('The app snapshot was not saved.');
@@ -258,18 +278,33 @@ final class InMemoryAppSnapshotStore implements AppSnapshotStore {
   }
 
   @override
-  Future<void> save(List<PersistedCapture> captures) async {
-    _snapshot = AppSnapshotCodec.encode(captures);
+  Future<Map<String, List<String>>> loadTagSenses() async {
+    final snapshot = _snapshot;
+    return snapshot == null
+        ? const {}
+        : AppSnapshotCodec.decodeTagSenses(snapshot);
+  }
+
+  @override
+  Future<void> save(
+    List<PersistedCapture> captures, {
+    Map<String, List<String>> tagSenses = const {},
+  }) async {
+    _snapshot = AppSnapshotCodec.encode(captures, tagSenses: tagSenses);
   }
 }
 
 abstract final class AppSnapshotCodec {
-  static const schemaVersion = 4;
+  static const schemaVersion = 5;
 
-  static String encode(List<PersistedCapture> captures) {
+  static String encode(
+    List<PersistedCapture> captures, {
+    Map<String, List<String>> tagSenses = const {},
+  }) {
     return jsonEncode({
       'schemaVersion': schemaVersion,
       'captures': captures.map((capture) => capture.toJson()).toList(),
+      if (tagSenses.isNotEmpty) 'tagSenses': tagSenses,
     });
   }
 
@@ -282,6 +317,7 @@ abstract final class AppSnapshotCodec {
     if (decodedVersion != 1 &&
         decodedVersion != 2 &&
         decodedVersion != 3 &&
+        decodedVersion != 4 &&
         decodedVersion != schemaVersion) {
       throw const FormatException('Unsupported app snapshot schema.');
     }
@@ -297,6 +333,25 @@ abstract final class AppSnapshotCodec {
           return PersistedCapture.fromJson(item);
         })
         .toList(growable: false);
+  }
+
+  /// The sense dictionary a snapshot carries, or nothing from before v5.
+  ///
+  /// Forgiving on purpose: a malformed entry costs that entry, not the
+  /// snapshot — the dictionary can always be asked for again, and the
+  /// captures must never be held hostage to it.
+  static Map<String, List<String>> decodeTagSenses(String snapshot) {
+    final decoded = jsonDecode(snapshot);
+    if (decoded is! Map<String, Object?>) return const {};
+    final senses = decoded['tagSenses'];
+    if (senses is! Map<String, Object?>) return const {};
+    return {
+      for (final entry in senses.entries)
+        if (entry.value is List<Object?>)
+          entry.key: List.unmodifiable(
+            (entry.value! as List<Object?>).whereType<String>(),
+          ),
+    };
   }
 }
 
@@ -539,7 +594,7 @@ String? _legacyFolderTagName(Object? name) => switch (name) {
   'restaurantCafe' => '맛집·카페',
   'recipe' => '레시피',
   'shopping' => '쇼핑',
-  'travelPlace' => '여행·장소',
+  'travelPlace' => '장소',
   'lifeTip' => '생활·팁',
   'other' => '기타',
   _ => null,
