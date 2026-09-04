@@ -74,6 +74,45 @@ void main() {
     );
   });
 
+  test('typing narrows the grid by anything on the card, not just tags', () {
+    final items = _library();
+
+    // A shop name is never going to be a tag — a word that fits one capture
+    // is not a tag by the rules the analysis works under — so the only way to
+    // reach it is the text of the card itself.
+    expect(
+      visibleItems(
+        items,
+        selected: const [],
+        untaggedOnly: false,
+        query: const ['화육계'],
+      ).map((item) => item.title),
+      ['화육계'],
+    );
+
+    // Words stack the way picked tags do: both, not either.
+    expect(
+      visibleItems(
+        items,
+        selected: const [],
+        untaggedOnly: false,
+        query: const ['맛집', '문래'],
+      ).map((item) => item.title),
+      ['모에루'],
+    );
+
+    // And a typed word narrows on top of a picked tag rather than replacing it.
+    expect(
+      visibleItems(
+        items,
+        selected: const ['맛집·카페'],
+        untaggedOnly: false,
+        query: const ['을지로'],
+      ).map((item) => item.title),
+      ['화육계'],
+    );
+  });
+
   test('having no tag is a filter like any other', () {
     final items = _library();
 
@@ -408,6 +447,66 @@ void main() {
       items.where((item) => itemAnswers(item, constellationTerms('  '))),
       hasLength(items.length),
     );
+  });
+
+  testWidgets('the grid has its own box, and a picked word becomes a chip', (
+    tester,
+  ) async {
+    final controller = AppController(InMemoryIncomingShareService());
+    addTearDown(controller.dispose);
+    await controller.initialize();
+
+    final groups = controller.groups;
+    await controller.updateGroupTags(groups.first.id, const [
+      ContentTag(value: '스킨케어'),
+    ]);
+    await controller.updateGroupTags(groups[1].id, const [
+      ContentTag(value: '앰플'),
+    ]);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.dark,
+        home: Scaffold(
+          backgroundColor: AppTheme.background,
+          body: ProductsScreen(controller: controller),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The grid opens with a box of its own — the constellation is no longer
+    // the only view you can type into.
+    expect(find.byKey(const Key('library-grid-search')), findsOneWidget);
+    // The door to every tag stays on the chip row rather than being repeated
+    // beside the box.
+    expect(find.byKey(const Key('library-grid-all-tags')), findsNothing);
+    expect(find.byKey(const Key('library-all-tags')), findsOneWidget);
+
+    await tester.enterText(find.byKey(const Key('library-grid-search')), '스킨');
+    await tester.pumpAndSettle();
+
+    // Half a word reaches the tag by name, which the capped chip row cannot
+    // do once the library outgrows eight tags.
+    expect(
+      find.byKey(const Key('library-grid-suggestion-스킨케어')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('library-grid-suggestion-스킨케어')));
+    await tester.pumpAndSettle();
+
+    // Tapping promotes it to a chip and takes the typed word away: the
+    // spelling was only ever the way to reach the tag.
+    expect(find.byKey(const Key('library-filter-스킨케어')), findsOneWidget);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('library-grid-search')))
+          .controller!
+          .text,
+      isEmpty,
+    );
+    expect(find.text('1 / ${groups.length}'), findsOneWidget);
   });
 
   testWidgets('an asked tag offers its companions, and a tap stacks them', (

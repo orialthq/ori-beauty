@@ -22,19 +22,30 @@ const _offeredTags = 8;
 /// Every picked tag has to be on the item, not any one of them. A plan widens
 /// its scope because it is gathering candidates worth suggesting; a reader
 /// looking through what they saved is trying to end up with fewer things.
+///
+/// [query] is what was typed, and it narrows the same way: every word has to
+/// be somewhere in the item. It reads the whole card — title, summary, place
+/// name, address, facts, and the tags — so 모에루 and 당산로 find the shop
+/// that no tag is ever going to be named after. Picked tags and typed words
+/// stack, because a reader who does both means both.
 List<SavedLibraryItem> visibleItems(
   List<SavedLibraryItem> items, {
   required List<String> selected,
   required bool untaggedOnly,
+  List<String> query = const [],
 }) {
   if (untaggedOnly) {
     return items.where((item) => item.tags.isEmpty).toList(growable: false);
   }
-  if (selected.isEmpty) {
+  if (selected.isEmpty && query.isEmpty) {
     return items;
   }
   return items
-      .where((item) => selected.every(item.hasTag))
+      .where(
+        (item) =>
+            selected.every(item.hasTag) &&
+            query.every((word) => item.matches(word)),
+      )
       .toList(growable: false);
 }
 
@@ -222,6 +233,59 @@ class _ProductsScreenState extends State<ProductsScreen> {
     );
   }
 
+  /// What the grid offers while the reader types.
+  ///
+  /// Only tags, and only what typing can reach that tapping cannot: a tag by
+  /// name, by 초성, or through the sense dictionary. Companions are left out
+  /// on purpose — the chip row underneath already offers the tags sitting on
+  /// what is shown, computed against the live filter, so listing them here
+  /// would be the same answer twice.
+  ///
+  /// Empty until something is typed. The chips are the resting state; a row
+  /// of suggestions over a row of offers with nothing asked is two rows of
+  /// the same thing.
+  List<SkySuggestion> _gridMatches(List<String> terms) {
+    final text = _query.text;
+    if (text.trim().isEmpty) return const [];
+    final partial = text.endsWith(' ') ? '' : terms.last;
+    final seen = <String>{};
+    final merged = <SkySuggestion>[];
+    if (partial.isNotEmpty) {
+      for (final entry in widget.controller.tagCounts) {
+        final name = entry.tag.value;
+        if (tagNameMatches(name, partial) &&
+            !_selected.contains(name) &&
+            seen.add(name)) {
+          merged.add((name: name, via: null, term: partial));
+        }
+      }
+    }
+    for (final hit in senseHits(
+      terms: terms,
+      vocabulary: widget.controller.tagVocabulary,
+      senses: widget.controller.tagSenses,
+    )) {
+      if (!_selected.contains(hit.name) && seen.add(hit.name)) {
+        merged.add(hit);
+      }
+    }
+    return merged.take(8).toList(growable: false);
+  }
+
+  /// In the grid a tapped suggestion becomes a chip, not more text.
+  ///
+  /// The typed words go away with it: the reader was spelling their way to
+  /// this tag, and once it is picked the spelling has done its job. A chip
+  /// also survives the next thing they type, which is what makes it worth
+  /// promoting the word into one.
+  void _pickGridSuggestion(SkySuggestion pick) {
+    setState(() {
+      _untaggedOnly = false;
+      if (!_selected.contains(pick.name)) _selected.add(pick.name);
+      _query.clear();
+    });
+  }
+
   /// A tapped suggestion becomes the search. A name match keeps the old
   /// toggle behaviour; a sense match swaps the word that summoned it for the
   /// tag itself — 매운거 was never going to light anything, and the reader
@@ -350,18 +414,22 @@ class _ProductsScreenState extends State<ProductsScreen> {
             for (final tag in item.tags) tag.value,
         });
         final untagged = items.where((item) => item.tags.isEmpty).length;
+        final sky = _view == LibraryView.constellation;
+        final terms = constellationTerms(_query.text);
         final visible = visibleItems(
           items,
           selected: _selected,
           untaggedOnly: _untaggedOnly,
+          // The sky reads the typed words itself, star by star; the grid is
+          // the only view where typing narrows the list.
+          query: sky ? const [] : terms,
         );
         final offers = offeredTags(visible, selected: _selected);
-        final filtered = _untaggedOnly || _selected.isNotEmpty;
-        final sky = _view == LibraryView.constellation;
-        final terms = constellationTerms(_query.text);
+        final filtered =
+            _untaggedOnly || _selected.isNotEmpty || (!sky && terms.isNotEmpty);
         final (suggestions, hinted) = sky
             ? _skyMatches(items, terms)
-            : (const <SkySuggestion>[], const <String>{});
+            : (_gridMatches(terms), const <String>{});
 
         return Column(
           children: [
@@ -382,7 +450,9 @@ class _ProductsScreenState extends State<ProductsScreen> {
               ),
             ),
             if (sky)
-              _SkySearch(
+              _LibrarySearch(
+                keyPrefix: 'library-sky',
+                hintText: '태그로 불 켜기 · 띄어 쓰면 겹칩니다',
                 controller: _query,
                 focusNode: _queryFocus,
                 suggestions: suggestions,
@@ -391,7 +461,18 @@ class _ProductsScreenState extends State<ProductsScreen> {
                 onForget: _forgetSense,
                 onOpenAll: _openAllTags,
               )
-            else
+            else ...[
+              _LibrarySearch(
+                keyPrefix: 'library-grid',
+                hintText: '이름·가게·주소, 또는 태그',
+                controller: _query,
+                focusNode: _queryFocus,
+                suggestions: suggestions,
+                onChanged: (_) => setState(() {}),
+                onPick: _pickGridSuggestion,
+                onForget: _forgetSense,
+                onOpenAll: null,
+              ),
               _FilterRow(
                 selected: _selected,
                 offers: offers,
@@ -401,6 +482,7 @@ class _ProductsScreenState extends State<ProductsScreen> {
                 onToggleUntagged: _toggleUntagged,
                 onOpenAll: _openAllTags,
               ),
+            ],
             Expanded(
               child: sky
                   ? TagConstellation(
@@ -544,8 +626,10 @@ final class _ViewToggle extends StatelessWidget {
 /// The suggestions are hidden the rest of the time on purpose. Standing them
 /// permanently above the sky would put a list of eight back on top of a map of
 /// three hundred: it would neither cover the library nor leave the view alone.
-final class _SkySearch extends StatelessWidget {
-  const _SkySearch({
+final class _LibrarySearch extends StatelessWidget {
+  const _LibrarySearch({
+    required this.keyPrefix,
+    required this.hintText,
     required this.controller,
     required this.focusNode,
     required this.suggestions,
@@ -555,6 +639,11 @@ final class _SkySearch extends StatelessWidget {
     required this.onOpenAll,
   });
 
+  /// Names the widgets so the two views can be told apart in a test, and so a
+  /// suggestion chip in one is never mistaken for the same word in the other.
+  final String keyPrefix;
+
+  final String hintText;
   final TextEditingController controller;
   final FocusNode focusNode;
   final List<SkySuggestion> suggestions;
@@ -564,7 +653,10 @@ final class _SkySearch extends StatelessWidget {
   /// Long-pressing a sense suggestion strikes the association out. The
   /// dictionary was written by a model; the reader is how it gets corrected.
   final void Function(SkySuggestion pick) onForget;
-  final VoidCallback onOpenAll;
+
+  /// Null where the door to every tag is already on screen: the grid keeps it
+  /// on the chip row underneath, and two of them side by side is one too many.
+  final VoidCallback? onOpenAll;
 
   @override
   Widget build(BuildContext context) {
@@ -576,15 +668,15 @@ final class _SkySearch extends StatelessWidget {
             children: [
               Expanded(
                 child: TextField(
-                  key: const Key('library-sky-search'),
+                  key: Key('$keyPrefix-search'),
                   controller: controller,
                   focusNode: focusNode,
                   onChanged: onChanged,
                   textInputAction: TextInputAction.search,
                   style: const TextStyle(color: AppTheme.ink, fontSize: 15),
-                  decoration: const InputDecoration(
-                    hintText: '태그로 불 켜기 · 띄어 쓰면 겹칩니다',
-                    prefixIcon: Icon(
+                  decoration: InputDecoration(
+                    hintText: hintText,
+                    prefixIcon: const Icon(
                       Icons.search_rounded,
                       color: AppTheme.subtle,
                       size: 20,
@@ -592,19 +684,21 @@ final class _SkySearch extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(width: 6),
-              TextButton(
-                key: const Key('library-sky-all-tags'),
-                onPressed: onOpenAll,
-                child: const Text(
-                  '모든 태그',
-                  style: TextStyle(
-                    color: AppTheme.muted,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
+              if (onOpenAll != null) ...[
+                const SizedBox(width: 6),
+                TextButton(
+                  key: Key('$keyPrefix-all-tags'),
+                  onPressed: onOpenAll,
+                  child: const Text(
+                    '모든 태그',
+                    style: TextStyle(
+                      color: AppTheme.muted,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -622,7 +716,7 @@ final class _SkySearch extends StatelessWidget {
                 children: [
                   for (final pick in suggestions) ...[
                     Material(
-                      key: Key('library-sky-suggestion-${pick.name}'),
+                      key: Key('$keyPrefix-suggestion-${pick.name}'),
                       color: AppTheme.fill,
                       shape: const StadiumBorder(
                         side: BorderSide(color: AppTheme.border),
