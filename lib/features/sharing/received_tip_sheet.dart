@@ -47,17 +47,8 @@ final class _ReceivedTipSheet extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Align(
-              child: Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppTheme.border,
-                  borderRadius: BorderRadius.circular(999),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
+            // The sheet theme draws the handle; one here made it two.
+            const SizedBox(height: 6),
             Row(
               children: [
                 Container(

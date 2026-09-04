@@ -284,6 +284,22 @@ void main() {
     final input = tester.widget<TextField>(find.byType(TextField).last);
     expect(input.autofocus, isFalse);
 
+    // One grab bar, not two. The sheet theme draws the handle for every modal
+    // sheet, so a sheet that also draws its own shows a stacked pair.
+    expect(
+      find.descendant(
+        of: find.byType(BottomSheet),
+        matching: find.byWidgetPredicate((widget) {
+          if (widget is! Container) return false;
+          final constraints = widget.constraints;
+          return constraints != null &&
+              constraints.maxWidth == 36 &&
+              constraints.maxHeight == 4;
+        }),
+      ),
+      findsNothing,
+    );
+
     final submit = find.widgetWithText(FilledButton, '내용 분석하기');
     expect(915 - tester.getBottomRight(submit).dy, greaterThanOrEqualTo(48));
 

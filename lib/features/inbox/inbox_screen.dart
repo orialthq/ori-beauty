@@ -676,17 +676,9 @@ final class _ManualInputSheetState extends State<_ManualInputSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Align(
-              child: Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppTheme.border,
-                  borderRadius: BorderRadius.circular(999),
-                ),
-              ),
-            ),
-            const SizedBox(height: 24),
+            // No handle drawn here: the sheet theme already puts one above
+            // this content, and drawing a second one stacked two bars.
+            const SizedBox(height: 6),
             Text('콘텐츠 추가', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 7),
             const Text(
