@@ -581,7 +581,7 @@ test("deduplicates exact in-flight requests and isolates cached results", async 
     cachedInputTokens: 20,
     outputTokens: 30,
     reasoningTokens: 10,
-    maxActive: 4,
+    maxActive: 10,
     maxQueued: 8,
     queueTimeoutMs: 30_000,
     highWater: 1,
@@ -745,6 +745,7 @@ test("limits upstream work to four requests and admits queued work FIFO", async 
   const started = [];
   const pending = [];
   const service = createAnalysisService({
+    maxConcurrent: 4,
     transport: {
       createResponse(body) {
         started.push(body.input[0].content[1].image_url);

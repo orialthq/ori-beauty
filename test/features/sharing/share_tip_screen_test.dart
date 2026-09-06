@@ -25,20 +25,9 @@ void main() {
       '이번 주말에 다 같이 가보고 각자 먹고 싶은 메뉴도 하나씩 골라보자!',
     );
     expect(find.byKey(const Key('share-letter-field')), findsOneWidget);
-    expect(find.byKey(const Key('share-card-mascot')), findsOneWidget);
-    final mascotBadge = tester.widget<Container>(
-      find.byKey(const Key('share-card-mascot-badge')),
-    );
-    final mascotDecoration = mascotBadge.decoration! as BoxDecoration;
-    expect(mascotDecoration.shape, BoxShape.circle);
-    expect(mascotDecoration.border, isNull);
-    final mascotZoom = tester.widget<Transform>(
-      find.byKey(const Key('share-card-mascot-zoom')),
-    );
-    expect(mascotZoom.transform.getMaxScaleOnAxis(), greaterThan(1));
-    expect(find.text('툭.'), findsOneWidget);
-    expect(find.text('흥, 이거나 봐.'), findsOneWidget);
-    expect(find.text('Trun On 오리가 던졌어요'), findsOneWidget);
+    expect(find.byKey(const Key('share-card-brand')), findsOneWidget);
+    expect(find.text('luffi'), findsOneWidget);
+    expect(find.text('너에게 어울릴 것 같아서'), findsOneWidget);
     expect(find.text('카드 보내고 지도 링크 이어 보내기'), findsOneWidget);
     expect(find.text('지도 링크만 보내기'), findsOneWidget);
     expect(find.textContaining('이미지 카드와 지도 링크는 따로도'), findsOneWidget);

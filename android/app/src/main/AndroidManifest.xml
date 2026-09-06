@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <application
-        android:label="Trun On"
+        android:label="luffi"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
@@ -89,7 +89,7 @@
             android:name=".CaptureQuickTileService"
             android:exported="true"
             android:icon="@drawable/ic_chaengim_tile"
-            android:label="Trun On에 추가"
+            android:label="luffi에 추가"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE"/>

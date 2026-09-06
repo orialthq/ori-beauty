@@ -37,7 +37,7 @@ final class ContentShareService {
       );
       return SharePlus.instance.share(
         ShareParams(
-          title: 'Trun On 정보 카드',
+          title: 'luffi 정보 카드',
           subject: title,
           text: buildCardShareText(
             placeName: placeName,
@@ -63,7 +63,7 @@ final class ContentShareService {
     final bytes = PortableTipPackageCodec.encodeUtf8(tip);
     return SharePlus.instance.share(
       ShareParams(
-        title: 'Trun On으로 보내기',
+        title: 'luffi로 보내기',
         subject: tip.title,
         files: [
           XFile.fromData(bytes, mimeType: PortableTipPackageCodec.mimeType),
@@ -98,7 +98,7 @@ final class ContentShareService {
     }
     return SharePlus.instance.share(
       ShareParams(
-        title: 'Trun On 지도 링크',
+        title: 'luffi 지도 링크',
         text: text,
         sharePositionOrigin: sharePositionOrigin,
       ),
@@ -144,5 +144,5 @@ String _safeFileName(String value) {
       .replaceAll(RegExp(r'-+'), '-')
       .replaceAll(RegExp(r'^-|-$'), '');
   final shortened = String.fromCharCodes(normalized.runes.take(40));
-  return shortened.isEmpty ? 'trun-on-tip' : shortened;
+  return shortened.isEmpty ? 'luffi-tip' : shortened;
 }

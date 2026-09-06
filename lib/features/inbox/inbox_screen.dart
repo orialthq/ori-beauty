@@ -140,6 +140,7 @@ final class InboxScreen extends StatelessWidget {
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
+      showDragHandle: false,
       builder: (_) => _ManualInputSheet(controller: controller),
     );
     if (result == null || !context.mounted) {
@@ -176,7 +177,13 @@ final class InboxScreen extends StatelessWidget {
   void _openCapture(BuildContext context, CaptureRecord capture) {
     if (capture.status == CaptureStatus.analyzing) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('이미지를 읽고 있어요. 잠시만 기다려 주세요.')),
+        SnackBar(
+          content: Text(
+            capture.analysisMode == CaptureAnalysisMode.batch
+                ? _batchStatusMessage(capture)
+                : '이미지를 읽고 있어요. 잠시만 기다려 주세요.',
+          ),
+        ),
       );
       return;
     }
@@ -312,6 +319,24 @@ final class _CaptureSummaryCard extends StatelessWidget {
                 letterSpacing: -0.3,
               ),
             ),
+            if (controller.pendingBatchCount > 0) ...[
+              const SizedBox(height: 10),
+              Text(
+                '절약 분석 ${controller.pendingBatchCount}장 · 접수 후 최대 24시간\n'
+                '접수가 끝난 사진은 앱을 닫아도 분석이 이어져요.\n'
+                '분석 서버에 연결되면 결과를 받아올 수 있어요.',
+                style: const TextStyle(
+                  color: AppTheme.muted,
+                  height: 1.6,
+                  fontSize: 13,
+                ),
+              ),
+              TextButton.icon(
+                onPressed: controller.refreshBatchAnalysis,
+                icon: const Icon(Icons.refresh_rounded, size: 17),
+                label: const Text('결과 새로고침'),
+              ),
+            ],
           ],
         ),
       ),
@@ -395,7 +420,11 @@ final class _CaptureStatusLabel extends StatelessWidget {
         capture.status == CaptureStatus.sourceLimited &&
         capture.raw.attachments.isEmpty &&
         capture.normalized.completeness == MaterialCompleteness.linkOnly;
-    final (label, color) = isLinkOnly
+    final (label, color) =
+        capture.status == CaptureStatus.analyzing &&
+            capture.analysisMode == CaptureAnalysisMode.batch
+        ? ('절약 분석', AppTheme.primary)
+        : isLinkOnly
         ? ('링크 저장', AppTheme.caution)
         : switch (capture.status) {
             CaptureStatus.received ||
@@ -463,7 +492,9 @@ final class _CaptureCard extends StatelessWidget {
         : isLinkOnly
         ? '링크를 저장했어요'
         : capture.status == CaptureStatus.analyzing
-        ? '이미지에서 내용을 읽는 중이에요'
+        ? capture.analysisMode == CaptureAnalysisMode.batch
+              ? '절약 모드로 정리하고 있어요'
+              : '이미지에서 내용을 읽는 중이에요'
         : capture.status == CaptureStatus.failed
         ? '분석을 완료하지 못했어요'
         : productLabel.isEmpty
@@ -590,6 +621,9 @@ final class _CaptureCard extends StatelessWidget {
       return '게시물 내용이 없어 스크린샷이 필요해요.';
     }
     if (capture.status == CaptureStatus.analyzing) {
+      if (capture.analysisMode == CaptureAnalysisMode.batch) {
+        return _batchStatusMessage(capture);
+      }
       return '이미지의 핵심 내용을 정리하고 있어요.';
     }
     if (capture.status == CaptureStatus.failed) {
@@ -615,6 +649,12 @@ final class _CaptureCard extends StatelessWidget {
       'image_too_large' => '이미지 용량이 커서 읽지 못했어요.',
       'invalid_image' || 'source_file_changed' => '원본 이미지를 확인하지 못했어요.',
       'analysis_timed_out' => '분석 시간이 길어졌어요. 다시 시도해 주세요.',
+      'batch_expired' => '처리 기한이 지났어요. 다시 분석하면 요금이 발생할 수 있어요.',
+      'batch_result_expired' => '결과 보관 기간이 지났어요. 새 분석이 필요해요.',
+      'batch_cancelled' => '배치 작업이 취소됐어요. 다시 눌러 분석할 수 있어요.',
+      'batch_failed' ||
+      'batch_item_failed' ||
+      'batch_result_missing' => '절약 분석을 마치지 못했어요. 다시 분석하면 요금이 발생할 수 있어요.',
       _ => '오른쪽 새로고침을 눌러 다시 시도할 수 있어요.',
     };
   }
@@ -718,6 +758,40 @@ final class _ManualInputSheetState extends State<_ManualInputSheet> {
             ),
             const SizedBox(height: 18),
             if (_showsCapturePicker) ...[
+              if (widget.controller.supportsBatchAnalysis) ...[
+                _AnalysisModeOption(
+                  title: '절약해서 정리',
+                  description: '이미지 분석 비용 50% 절약 · 접수 후 최대 24시간',
+                  icon: Icons.eco_outlined,
+                  selected:
+                      widget.controller.selectedAnalysisMode ==
+                      CaptureAnalysisMode.batch,
+                  onTap: _pickingCapture
+                      ? null
+                      : () => setState(() {
+                          widget.controller.selectAnalysisMode(
+                            CaptureAnalysisMode.batch,
+                          );
+                        }),
+                ),
+                const SizedBox(height: 8),
+                _AnalysisModeOption(
+                  title: '바로 정리',
+                  description: '일반 요금 · 최대 10장 동시 분석',
+                  icon: Icons.bolt_outlined,
+                  selected:
+                      widget.controller.selectedAnalysisMode ==
+                      CaptureAnalysisMode.instant,
+                  onTap: _pickingCapture
+                      ? null
+                      : () => setState(() {
+                          widget.controller.selectAnalysisMode(
+                            CaptureAnalysisMode.instant,
+                          );
+                        }),
+                ),
+                const SizedBox(height: 16),
+              ],
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
@@ -867,7 +941,7 @@ final class _ManualInputSheetState extends State<_ManualInputSheet> {
     setState(() => _importingTip = true);
     try {
       const typeGroup = XTypeGroup(
-        label: 'Trun On 팁',
+        label: 'luffi 팁',
         extensions: [PortableTipPackageCodec.fileExtension],
         // Chat and file-provider apps often replace a custom MIME type while
         // preserving the .trunon filename. The codec below still enforces the
@@ -908,12 +982,85 @@ final class _ManualInputSheetState extends State<_ManualInputSheet> {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
-          const SnackBar(content: Text('이 파일은 Trun On 팁으로 열 수 없어요.')),
+          const SnackBar(content: Text('이 파일은 luffi 팁으로 열 수 없어요.')),
         );
     } finally {
       if (mounted) setState(() => _importingTip = false);
     }
   }
+}
+
+String _batchStatusMessage(CaptureRecord capture) =>
+    switch (capture.batchStatus) {
+      'pending_upload' => '사진 접수 대기 중이에요. 분석 서버 연결을 유지해 주세요.',
+      'queued' => '접수 완료 · 사진을 묶어 분석을 요청하고 있어요.',
+      'submission_unknown' => '접수 상태 확인이 필요해요. 중복 과금을 막기 위해 재전송을 보류했어요.',
+      _ => '분석을 기다리고 있어요. 접수 후 최대 24시간이 걸릴 수 있어요.',
+    };
+
+final class _AnalysisModeOption extends StatelessWidget {
+  const _AnalysisModeOption({
+    required this.title,
+    required this.description,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+  final String title;
+  final String description;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: selected
+        ? AppTheme.primary.withValues(alpha: 0.1)
+        : AppTheme.surface,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(16),
+      side: BorderSide(color: selected ? AppTheme.primary : AppTheme.border),
+    ),
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            Icon(icon, color: AppTheme.ink, size: 22),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    description,
+                    style: const TextStyle(
+                      color: AppTheme.muted,
+                      fontSize: 12,
+                      height: 1.45,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Icon(
+              selected ? Icons.check_circle_rounded : Icons.circle_outlined,
+              size: 21,
+              color: selected ? AppTheme.primary : AppTheme.subtle,
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 final class _EmptyInbox extends StatelessWidget {

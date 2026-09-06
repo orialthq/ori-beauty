@@ -1,4 +1,6 @@
 import { createAnalysisService } from "./analysis_service.js";
+import { createBatchAnalysisService } from "./batch_analysis_service.js";
+import { createOpenAIBatchTransport } from "./openai_batch_transport.js";
 import {
   DEEPSEEK_BASE_URL,
   DEEPSEEK_MODEL,
@@ -23,6 +25,10 @@ if (!apiKey) {
 } else {
   const transport = createOpenAITransport({ apiKey });
   const analysisService = createAnalysisService({ transport });
+  const batchAnalysisService = await createBatchAnalysisService({
+    transport: createOpenAIBatchTransport({ apiKey }),
+    analysisService,
+  });
 
   // The place lookup runs in two halves. Retrieval has to stay on this model
   // because it is the one whose search index reaches Korean listing sites — the
@@ -76,6 +82,7 @@ if (!apiKey) {
 
   const server = createHttpServer({
     analysisService,
+    batchAnalysisService,
     enrichmentService,
     placeResolutionService,
     recommendationService,
@@ -97,10 +104,19 @@ if (!apiKey) {
     const address = server.address();
     const resolvedPort =
       address && typeof address === "object" ? address.port : port;
-    console.log(`Trun On analysis server: http://${host}:${resolvedPort}`);
+    console.log(`luffi analysis server: http://${host}:${resolvedPort}`);
   });
 
-  const shutdown = () => server.close(() => process.exit(0));
+  const shutdown = () => {
+    server.close(async () => {
+      await batchAnalysisService.close();
+      process.exit(0);
+    });
+  };
+  server.once("error", async () => {
+    await batchAnalysisService.close();
+    process.exitCode = 1;
+  });
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 }

@@ -546,7 +546,7 @@ abstract final class PortableTipLimits {
 
 final class UnsupportedPortableTipVersionException extends FormatException {
   const UnsupportedPortableTipVersionException(this.receivedVersion)
-    : super('이 팁은 더 최신 버전의 Trun On에서 만들었어요. 앱을 업데이트해 주세요.');
+    : super('이 팁은 더 최신 버전의 luffi에서 만들었어요. 앱을 업데이트해 주세요.');
 
   final Object? receivedVersion;
 }

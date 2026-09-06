@@ -22,7 +22,7 @@ class CaptureNotificationManager(private val context: Context) {
                 "캡처 도착 알림",
                 NotificationManager.IMPORTANCE_HIGH,
             ).apply {
-                description = "Trun On으로 보낸 캡처의 도착과 분석 시작을 알려드려요."
+                description = "luffi로 보낸 캡처의 도착과 분석 시작을 알려드려요."
             }
         notificationManager.createNotificationChannel(channel)
     }
@@ -54,7 +54,7 @@ class CaptureNotificationManager(private val context: Context) {
             builder
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
                 .setContentTitle("캡처를 받았어요")
-                .setContentText("탭해서 Trun On의 분석 상태를 확인해 주세요.")
+                .setContentText("탭해서 luffi의 분석 상태를 확인해 주세요.")
                 .setCategory(Notification.CATEGORY_STATUS)
                 .setContentIntent(contentIntent)
                 .setAutoCancel(true)

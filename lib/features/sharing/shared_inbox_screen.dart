@@ -235,7 +235,7 @@ final class _Empty extends StatelessWidget {
             ),
             SizedBox(height: 6),
             Text(
-              '누군가 Trun On에서 정리한 걸 보내면 여기에 쌓여요.',
+              '누군가 luffi에서 정리한 걸 보내면 여기에 쌓여요.',
               style: TextStyle(
                 color: AppTheme.muted,
                 fontSize: 14,

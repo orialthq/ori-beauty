@@ -8,6 +8,7 @@ import {
   SCHEMA_VERSION,
 } from "./constants.js";
 import { AppError, normalizeError } from "./errors.js";
+import { assertBatchRequestId } from "./batch_analysis_service.js";
 import {
   validateAnalyzeRequest,
   validateEnrichPlaceRequest,
@@ -19,6 +20,7 @@ import {
 
 export function createHttpServer({
   analysisService,
+  batchAnalysisService = null,
   enrichmentService = null,
   placeResolutionService = null,
   recommendationService = null,
@@ -113,6 +115,34 @@ export function createHttpServer({
           );
         }
         return sendJson(response, 200, result);
+      }
+
+      if (url.pathname === "/v1/analysis-tasks" || url.pathname === "/v1/analysis-tasks/status") {
+        if (request.method !== "POST") throw methodNotAllowed("POST");
+        if (!batchAnalysisService) {
+          throw new AppError("BATCH_NOT_CONFIGURED", "묶음 분석을 사용할 수 없어요.", {
+            httpStatus: 503, retryable: true,
+          });
+        }
+        assertJsonContentType(request.headers["content-type"]);
+        const isStatus = url.pathname.endsWith("/status");
+        const body = await readJsonBody(request, {
+          maxBodyBytes: isStatus ? 16 * 1024 : maxBodyBytes,
+          timeoutMs: bodyTimeoutMs,
+        });
+        const allowed = isStatus ? ["requestIds"] : ["requestId", "input"];
+        if (!body || typeof body !== "object" || Array.isArray(body) ||
+            Object.keys(body).some((key) => !allowed.includes(key))) {
+          throw new AppError("INVALID_REQUEST", "묶음 분석 요청 형식이 올바르지 않아요.", { httpStatus: 400 });
+        }
+        if (isStatus) {
+          const result = await batchAnalysisService.status(body.requestIds);
+          return sendJson(response, 200, result);
+        }
+        const id = assertBatchRequestId(body.requestId);
+        const input = validateAnalyzeRequest(body.input, { maxImageBytes });
+        const task = await batchAnalysisService.submit(id, input);
+        return sendJson(response, 202, task);
       }
 
       if (url.pathname === "/v1/tag-merges") {

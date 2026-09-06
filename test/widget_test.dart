@@ -9,7 +9,7 @@ import 'package:ori_beauty/features/product/product_detail_screen.dart';
 import 'package:ori_beauty/state/app_controller.dart';
 
 void main() {
-  testWidgets('renders the Trun On home and organized library navigation', (
+  testWidgets('renders the luffi home and organized library navigation', (
     tester,
   ) async {
     final service = InMemoryIncomingShareService();
@@ -21,7 +21,8 @@ void main() {
     await tester.pumpAndSettle();
 
     final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
-    expect(app.title, 'Trun On');
+    expect(app.title, 'luffi');
+    expect(find.byKey(const Key('home-luffi-brand')), findsOneWidget);
     expect(find.byKey(const Key('shell-menu-button')), findsOneWidget);
     expect(find.byKey(const Key('home-prompt-field')), findsOneWidget);
     expect(find.textContaining('TODAY'), findsNothing);

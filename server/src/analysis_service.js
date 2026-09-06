@@ -8,7 +8,7 @@ import { OpenAITransportError } from "./errors.js";
 import { buildOpenAIRequest } from "./prompt.js";
 import { validateAnalysisResult } from "./result_validation.js";
 
-const MAX_CONCURRENT_UPSTREAM_REQUESTS = 4;
+const MAX_CONCURRENT_UPSTREAM_REQUESTS = 10;
 const MAX_QUEUED_UPSTREAM_REQUESTS = 8;
 const DEFAULT_QUEUE_TIMEOUT_MS = 30_000;
 const ANALYSIS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -180,20 +180,7 @@ export function createAnalysisService({
         transportPromise,
         deadline,
       ]);
-      const outputText = extractOutputText(response);
-
-      let parsed;
-      try {
-        parsed = JSON.parse(outputText);
-      } catch (error) {
-        throw new OpenAITransportError("invalid_response", {
-          cause: error,
-          retryable: true,
-        });
-      }
-      const result = applyDeterministicCompletenessGuards(
-        validateAnalysisResult(parsed, { vocabulary: input.vocabulary }),
-      );
+      const result = parseAnalysisResponse(response, input.vocabulary);
       counters.upstreamSuccesses += 1;
       return result;
     } catch (error) {
@@ -216,11 +203,7 @@ export function createAnalysisService({
   return {
     async analyze(input) {
       counters.requests += 1;
-      const requestBody = buildOpenAIRequest({
-        ...input,
-        textFormat: ANALYSIS_TEXT_FORMAT,
-        model: MODEL,
-      });
+      const requestBody = buildAnalysisRequest(input);
       const key = exactRequestKey(requestBody);
       const cached = readCache(key, now());
       if (cached !== undefined) {
@@ -259,10 +242,44 @@ export function createAnalysisService({
         cacheEntries: cache.size,
       };
     },
+
+    // The asynchronous path shares only fully validated successful results.
+    // It never starts a synchronous paid request when a cache entry is absent.
+    getCachedResult(requestBody) {
+      return readCache(exactRequestKey(requestBody), now());
+    },
+
+    rememberResult(requestBody, result) {
+      writeCache(exactRequestKey(requestBody), result, now());
+    },
   };
 }
 
-function exactRequestKey(requestBody) {
+export function buildAnalysisRequest(input) {
+  return buildOpenAIRequest({
+    ...input,
+    textFormat: ANALYSIS_TEXT_FORMAT,
+    model: MODEL,
+  });
+}
+
+export function parseAnalysisResponse(response, vocabulary = []) {
+  let parsed;
+  try {
+    parsed = JSON.parse(extractOutputText(response));
+  } catch (error) {
+    if (error instanceof OpenAITransportError) throw error;
+    throw new OpenAITransportError("invalid_response", {
+      cause: error,
+      retryable: true,
+    });
+  }
+  return applyDeterministicCompletenessGuards(
+    validateAnalysisResult(parsed, { vocabulary }),
+  );
+}
+
+export function exactRequestKey(requestBody) {
   const requestWithoutInlineImageBytes = JSON.stringify(
     requestBody,
     (property, value) => {

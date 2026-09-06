@@ -375,6 +375,9 @@ final class PersistedCapture {
     this.tagOverride,
     this.attachments = const [],
     this.analysis,
+    this.analysisMode = CaptureAnalysisMode.instant,
+    this.batchRequestId,
+    this.batchStatus,
   });
 
   factory PersistedCapture.fromRecord(
@@ -400,6 +403,9 @@ final class PersistedCapture {
       tagOverride: capture.tagOverride,
       attachments: capture.raw.attachments,
       analysis: capture.analysis,
+      analysisMode: capture.analysisMode,
+      batchRequestId: capture.batchRequestId,
+      batchStatus: capture.batchStatus,
     );
   }
 
@@ -418,6 +424,14 @@ final class PersistedCapture {
     final identityJson = json['confirmedIdentity'];
     final rawAttachments = json['attachments'];
     final rawAnalysis = json['analysis'];
+    final batchRequestId = json['batchRequestId'];
+    final batchStatus = json['batchStatus'];
+    if ((batchRequestId != null &&
+            (batchRequestId is! String ||
+                !RegExp(r'^[a-f0-9]{64}$').hasMatch(batchRequestId))) ||
+        (batchStatus != null && batchStatus is! String)) {
+      throw const FormatException('Persisted batch metadata is invalid.');
+    }
     return PersistedCapture(
       transportEventId: transportEventId,
       receivedAt: DateTime.fromMillisecondsSinceEpoch(receivedAtEpochMs),
@@ -469,6 +483,13 @@ final class PersistedCapture {
       analysis: rawAnalysis is Map<String, Object?>
           ? _AnalysisRunCodec.fromJson(rawAnalysis)
           : null,
+      analysisMode: _enumByName(
+        CaptureAnalysisMode.values,
+        json['analysisMode'],
+        CaptureAnalysisMode.instant,
+      ),
+      batchRequestId: batchRequestId as String?,
+      batchStatus: batchStatus as String?,
     );
   }
 
@@ -492,6 +513,9 @@ final class PersistedCapture {
   final List<ContentTag>? tagOverride;
   final List<IncomingAttachment> attachments;
   final AnalysisRun? analysis;
+  final CaptureAnalysisMode analysisMode;
+  final String? batchRequestId;
+  final String? batchStatus;
 
   IncomingShare toIncomingShare() {
     return IncomingShare(
@@ -536,6 +560,9 @@ final class PersistedCapture {
       'tagOverride': tagOverride?.map((tag) => tag.toJson()).toList(),
       'attachments': attachments.map((item) => item.toJson()).toList(),
       'analysis': analysis == null ? null : _AnalysisRunCodec.toJson(analysis!),
+      'analysisMode': analysisMode.name,
+      'batchRequestId': batchRequestId,
+      'batchStatus': batchStatus,
     };
   }
 

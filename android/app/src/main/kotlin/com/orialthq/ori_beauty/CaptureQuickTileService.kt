@@ -11,7 +11,7 @@ class CaptureQuickTileService : TileService() {
         super.onStartListening()
         qsTile?.apply {
             state = Tile.STATE_ACTIVE
-            label = "Trun On에 추가"
+            label = "luffi에 추가"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 subtitle = "최근 캡처 선택"
             }

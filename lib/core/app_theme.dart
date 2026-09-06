@@ -1,19 +1,18 @@
 import 'package:flutter/material.dart';
 
-/// Shared visual language for Trun On.
+/// Shared visual language for luffi.
 ///
-/// The palette intentionally keeps the teammate prototype's near-black canvas
-/// and acid-lime action color, while raising secondary-text contrast enough for
-/// small Android devices and larger accessibility text sizes.
+/// Sea-glass green gives saved moments a gentle direction. The near-black
+/// canvas keeps the workspace calm, with readable secondary text on phones.
 abstract final class AppTheme {
   /// Keeps bottom-sheet actions above Android gesture/three-button navigation.
   /// `showModalBottomSheet(useSafeArea: true)` does not protect the bottom edge.
   static const bottomSheetSafeInset = 28.0;
 
-  static const primary = Color(0xFFC6FF3E);
-  static const primarySoft = Color(0xFF293514);
-  static const accent = Color(0xFFFF5B2E);
-  static const accentSoft = Color(0xFF382018);
+  static const primary = Color(0xFFB6E8D8);
+  static const primarySoft = Color(0xFF1C352E);
+  static const accent = Color(0xFFE6B59D);
+  static const accentSoft = Color(0xFF352820);
   static const background = Color(0xFF0B0B0D);
   static const surface = Color(0xFF151517);
   static const surfaceRaised = Color(0xFF1C1C20);
@@ -22,7 +21,7 @@ abstract final class AppTheme {
   static const subtle = Color(0xFF8B8B94);
   static const border = Color(0xFF2E2E34);
   static const fill = Color(0xFF202024);
-  static const positive = Color(0xFF2ED9C3);
+  static const positive = Color(0xFF91CFBB);
   static const caution = Color(0xFFFFB84D);
   static const negative = Color(0xFFFF6B67);
 
@@ -52,15 +51,15 @@ abstract final class AppTheme {
   // The nearest plan is filled rather than outlined, so one card carries the
   // whole list's urgency and the rest can stay quiet. Both ends sit in the same
   // family as `accent`, which is the app's own "now" color.
-  static const planHeroStart = Color(0xFFEF564A);
-  static const planHeroEnd = Color(0xFFF4836A);
+  static const planHeroStart = Color(0xFFE0AD94);
+  static const planHeroEnd = Color(0xFFF0CAB4);
 
   /// Ink for the filled card. Near-black rather than white: the gradient is
   /// light enough that white type on it fails contrast at small sizes.
   static const planHeroInk = Color(0xFF1A0B08);
   static const planHeroMuted = Color(0xCC2A0F0A);
 
-  /// Segments already ticked off, on the filled card and off it. The lime is
+  /// Segments already ticked off, on the filled card and off it. The mint is
   /// `primary` — the same green the rest of the app spends on done-ness.
   static const planProgressDone = primary;
   static const planProgressDoneOnHero = Color(0xFF7E2018);
@@ -69,9 +68,9 @@ abstract final class AppTheme {
 
   // The one banner that counts what is due. Warm rather than red: it is a nudge
   // about today, not an error.
-  static const planAlert = Color(0xFFFF7A4D);
-  static const planAlertSurface = Color(0xFF241310);
-  static const planAlertBorder = Color(0xFF6B3220);
+  static const planAlert = Color(0xFFE6B59D);
+  static const planAlertSurface = Color(0xFF29211D);
+  static const planAlertBorder = Color(0xFF594339);
 
   /// Local theme for the plan inbox/editor.
   ///

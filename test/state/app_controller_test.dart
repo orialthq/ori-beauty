@@ -1072,11 +1072,9 @@ void main() {
       await imageController.initialize();
 
       expect(analysisService.startedCaptureIds, [
-        'capture-picker-batch-0',
-        'capture-picker-batch-1',
-        'capture-picker-batch-2',
+        for (var index = 0; index < 10; index++) 'capture-picker-batch-$index',
       ]);
-      expect(analysisService.activeCount, 3);
+      expect(analysisService.activeCount, 10);
       expect(
         analysisService.maxActiveCount,
         AppController.maxConcurrentCaptureAnalyses,
@@ -1109,16 +1107,16 @@ void main() {
 
       // Whichever worker finishes first, the next waiting id starts first.
       analysisService.release('capture-picker-batch-1');
-      await _waitUntil(() => analysisService.startedCaptureIds.length == 4);
-      expect(analysisService.startedCaptureIds.last, 'capture-picker-batch-3');
-      expect(analysisService.activeCount, 3);
+      await _waitUntil(() => analysisService.startedCaptureIds.length == 11);
+      expect(analysisService.startedCaptureIds.last, 'capture-picker-batch-10');
+      expect(analysisService.activeCount, 10);
 
       analysisService.releaseAll();
       await _waitUntil(() => imageController.analyzingCount == 0);
 
       expect(analysisService.startedCaptureIds, hasLength(75));
       expect(analysisService.startedCaptureIds.toSet(), hasLength(75));
-      expect(analysisService.maxActiveCount, 3);
+      expect(analysisService.maxActiveCount, 10);
       expect(analysisService.activeCount, 0);
       expect(announcements, hasLength(1));
       expect(

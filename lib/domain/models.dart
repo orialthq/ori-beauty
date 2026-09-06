@@ -19,6 +19,8 @@ enum MaterialCompleteness { complete, partial, linkOnly }
 
 enum AnalysisRunStatus { succeeded, failed }
 
+enum CaptureAnalysisMode { instant, batch }
+
 enum FieldOrigin { deterministicRule, catalogMatch, user }
 
 enum EvidenceKind { sharedText, url, userInput, ocrText, imageRegion }
@@ -1695,6 +1697,9 @@ final class CaptureRecord {
     this.review,
     this.groupId,
     this.tagOverride,
+    this.analysisMode = CaptureAnalysisMode.instant,
+    this.batchRequestId,
+    this.batchStatus,
   });
 
   final RawCapture raw;
@@ -1703,6 +1708,12 @@ final class CaptureRecord {
   final AnalysisRun? analysis;
   final UserReview? review;
   final String? groupId;
+
+  /// The saved choice and task identity survive a restart while an economical
+  /// batch waits for its result. Older captures keep their instant behavior.
+  final CaptureAnalysisMode analysisMode;
+  final String? batchRequestId;
+  final String? batchStatus;
 
   /// The tags the reader settled on, when they have touched them.
   ///
@@ -1750,6 +1761,10 @@ final class CaptureRecord {
     UserReview? review,
     String? groupId,
     List<ContentTag>? tagOverride,
+    CaptureAnalysisMode? analysisMode,
+    String? batchRequestId,
+    String? batchStatus,
+    bool clearBatchRequest = false,
   }) {
     return CaptureRecord(
       raw: raw,
@@ -1759,6 +1774,11 @@ final class CaptureRecord {
       review: review ?? this.review,
       groupId: groupId ?? this.groupId,
       tagOverride: tagOverride ?? this.tagOverride,
+      analysisMode: analysisMode ?? this.analysisMode,
+      batchRequestId: clearBatchRequest
+          ? null
+          : batchRequestId ?? this.batchRequestId,
+      batchStatus: clearBatchRequest ? null : batchStatus ?? this.batchStatus,
     );
   }
 }

@@ -42,8 +42,8 @@ final class DevelopmentBackupService {
     } else {
       await SharePlus.instance.share(
         ShareParams(
-          title: 'Trun On 개발 데이터 백업',
-          subject: 'Trun On 개발 데이터 백업',
+          title: 'luffi 개발 데이터 백업',
+          subject: 'luffi 개발 데이터 백업',
           text: '가져온 콘텐츠와 앱이 보관한 이미지 사본의 개발용 백업이에요.',
           files: [XFile(archive.path, mimeType: 'application/zip')],
           fileNameOverrides: [archive.uri.pathSegments.last],

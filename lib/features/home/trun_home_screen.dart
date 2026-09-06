@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
+import '../../core/luffi_brand.dart';
 import '../common/shell_menu_button.dart';
 import '../plans/plan_date_dialog.dart';
 import '../plans/plan_editor_screen.dart';
@@ -74,9 +75,7 @@ final class TrunHomeScreen extends StatelessWidget {
 
 /// Home's top row: a way out on the left, a way in on the right.
 ///
-/// No name in the middle. Home says what it is with one line in the middle of
-/// the screen, and the same word twice would be the third thing to read before
-/// the box.
+/// The brand lives in the center of home, leaving these actions easy to find.
 final class _Masthead extends StatelessWidget {
   const _Masthead({required this.onAdd, required this.onOpenMenu});
 
@@ -704,116 +703,35 @@ final class _ConditionChip extends StatelessWidget {
   }
 }
 
-/// The one line home says for itself, typed out as though something is asking.
-///
-/// The app's own verb — a reader who bought the name already knows what turning
-/// something on means here, and the box below is where they answer.
-///
-/// It types once, on arrival, and then sits still. A line that kept animating
-/// would be movement next to a text field, which is where a reader's attention
-/// belongs.
-final class _Headline extends StatefulWidget {
+/// A quiet introduction that stays still while the reader writes a plan.
+final class _Headline extends StatelessWidget {
   const _Headline();
 
   @override
-  State<_Headline> createState() => _HeadlineState();
-}
-
-final class _HeadlineState extends State<_Headline>
-    with SingleTickerProviderStateMixin {
-  static const _line = 'Turn it on.';
-
-  /// Faint enough to sit beside the line without competing with it. The app's
-  /// own amber, dimmed against the canvas rather than given a colour of its
-  /// own.
-  static final _beta = Color.alphaBlend(
-    AppTheme.caution.withValues(alpha: 0.62),
-    AppTheme.background,
-  );
-
-  static const _style = TextStyle(
-    color: AppTheme.ink,
-    fontSize: 34,
-    height: 1.15,
-    fontWeight: FontWeight.w900,
-    letterSpacing: -1.2,
-  );
-
-  late final AnimationController _typing = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 62 * _line.length),
-  )..forward();
-
-  @override
-  void dispose() {
-    _typing.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _typing,
-      builder: (context, _) {
-        final shown = (_line.length * _typing.value).round();
-        final done = _typing.isCompleted;
-        // Shrunk rather than wrapped or clipped when it does not fit. One line
-        // is the whole idea, and a narrow screen or a large text size would
-        // otherwise break it across two or overflow the side.
-        return FittedBox(
-          fit: BoxFit.scaleDown,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Stack(
-                alignment: Alignment.centerLeft,
-                children: [
-                  // The finished line, kept invisible so the box is its final
-                  // size from the first frame. Without it the layout grows a
-                  // character at a time and drags the box below it down the
-                  // screen.
-                  Opacity(opacity: 0, child: Text(_line, style: _style)),
-                  Text.rich(
-                    TextSpan(
-                      children: [
-                        TextSpan(text: _line.substring(0, shown)),
-                        if (!done)
-                          const TextSpan(
-                            text: '▌',
-                            style: TextStyle(color: AppTheme.primary),
-                          ),
-                      ],
-                    ),
-                    style: _style,
-                  ),
-                ],
-              ),
-              const SizedBox(width: 7),
-              // Raised beside the line rather than sitting under it, and only
-              // once the line has finished typing — arriving with the first
-              // character would make it part of the sentence.
-              Padding(
-                padding: const EdgeInsets.only(top: 5),
-                child: AnimatedOpacity(
-                  opacity: done ? 1 : 0,
-                  duration: const Duration(milliseconds: 260),
-                  child: Text(
-                    'BETA',
-                    style: TextStyle(
-                      color: _beta,
-                      fontSize: 11,
-                      height: 1,
-                      letterSpacing: 0.6,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                ),
-              ),
-            ],
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 32),
+      child: Column(
+        key: Key('home-luffi-brand'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          LuffiMark(size: 88, secondaryColor: AppTheme.ink),
+          SizedBox(height: 10),
+          LuffiWordmark(fontSize: 52),
+          SizedBox(height: 25),
+          Text(
+            '모아둔 순간을,\n해보는 일상으로.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: AppTheme.muted,
+              fontSize: 17,
+              height: 1.65,
+              letterSpacing: -0.35,
+              fontWeight: FontWeight.w400,
+            ),
           ),
-        );
-      },
+        ],
+      ),
     );
   }
 }

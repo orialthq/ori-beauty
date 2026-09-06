@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
+import '../../core/luffi_brand.dart';
 import '../../data/content_share_service.dart';
 import '../../domain/models.dart';
 import '../../domain/portable_tip_package.dart';
@@ -221,9 +222,7 @@ final class _ShareTipScreenState extends State<ShareTipScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.send_to_mobile_rounded),
-                  label: Text(
-                    _sharingPackage ? '파일을 준비하고 있어요…' : 'Trun On으로 보내기',
-                  ),
+                  label: Text(_sharingPackage ? '파일을 준비하고 있어요…' : 'luffi로 보내기'),
                 ),
               ),
             ),
@@ -231,9 +230,9 @@ final class _ShareTipScreenState extends State<ShareTipScreen> {
             Text(
               sendsMapLinks
                   ? '이미지 카드와 지도 링크는 따로도 보낼 수 있어요.\n'
-                        'Trun On용 팁 파일은 앱에서 다시 저장하고 활용할 수 있어요.'
+                        'luffi용 팁 파일은 앱에서 다시 저장하고 활용할 수 있어요.'
                   : '첫 번째는 앱 없이 읽는 이미지 카드,\n'
-                        '두 번째는 Trun On에서 다시 저장하고 활용하는 팁 파일이에요.',
+                        '두 번째는 luffi에서 다시 저장하고 활용하는 팁 파일이에요.',
               textAlign: TextAlign.center,
               style: const TextStyle(
                 color: AppTheme.subtle,
@@ -604,7 +603,7 @@ final class _GiftTipCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const dark = Color(0xFF17130F);
+    const dark = Color(0xFF153C35);
     final cleanMessage = message.replaceAll(RegExp(r'\s+'), ' ').trim();
     return MediaQuery(
       data: MediaQuery.of(context).copyWith(textScaler: TextScaler.noScaling),
@@ -650,34 +649,18 @@ final class _GiftTipCard extends StatelessWidget {
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      Transform.rotate(
-                        angle: -0.08,
-                        child: Container(
-                          key: const Key('share-card-mascot-badge'),
-                          width: 58,
-                          height: 58,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFFE7D8),
-                            shape: BoxShape.circle,
-                            boxShadow: const [
-                              BoxShadow(
-                                color: Color(0x33000000),
-                                blurRadius: 0,
-                                offset: Offset(4, 4),
-                              ),
-                            ],
-                          ),
-                          child: ClipOval(
-                            child: Transform.scale(
-                              key: const Key('share-card-mascot-zoom'),
-                              scale: 1.14,
-                              child: Image.asset(
-                                'assets/branding/trun-on-duck-app-icon.png',
-                                key: const Key('share-card-mascot'),
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                          ),
+                      Container(
+                        key: const Key('share-card-brand-badge'),
+                        width: 52,
+                        height: 52,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.4),
+                          borderRadius: BorderRadius.circular(17),
+                        ),
+                        child: const LuffiMark(
+                          key: Key('share-card-brand'),
+                          size: 48,
+                          color: dark,
                         ),
                       ),
                       const SizedBox(width: 11),
@@ -686,34 +669,15 @@ final class _GiftTipCard extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           mainAxisSize: MainAxisSize.min,
                           children: [
+                            LuffiWordmark(fontSize: 24, color: dark),
+                            SizedBox(height: 5),
                             Text(
-                              '툭.',
+                              '너에게 어울릴 것 같아서',
                               style: TextStyle(
                                 color: dark,
-                                fontSize: 10,
-                                height: 1,
-                                fontWeight: FontWeight.w900,
-                                letterSpacing: 1.4,
-                              ),
-                            ),
-                            SizedBox(height: 4),
-                            Text(
-                              '흥, 이거나 봐.',
-                              style: TextStyle(
-                                color: dark,
-                                fontSize: 14,
-                                height: 1.1,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                            SizedBox(height: 3),
-                            Text(
-                              'Trun On 오리가 던졌어요',
-                              style: TextStyle(
-                                color: Color(0xB317130F),
-                                fontSize: 9,
-                                height: 1.1,
-                                fontWeight: FontWeight.w800,
+                                fontSize: 11,
+                                height: 1.3,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ],

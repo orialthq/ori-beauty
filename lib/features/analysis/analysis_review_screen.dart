@@ -368,7 +368,7 @@ final class _LinkOnlyReview extends StatelessWidget {
           const SizedBox(height: 28),
           const _SectionHeading(
             title: '스크린샷으로 이어서 저장하기',
-            description: '보이는 화면 한 장이면 Trun On이 이미지에서 내용을 읽을 수 있어요.',
+            description: '보이는 화면 한 장이면 luffi가 이미지에서 내용을 읽을 수 있어요.',
           ),
           const SizedBox(height: 14),
           const _ScreenshotGuideCard(),
@@ -394,7 +394,7 @@ final class _ScreenshotGuideCard extends StatelessWidget {
     const steps = [
       ('1', '원래 게시물로 돌아가 화면을 캡처해요.'),
       ('2', '캡처 미리보기의 공유 버튼을 눌러요.'),
-      ('3', 'Trun On을 선택하면 바로 저장하고 분석해요.'),
+      ('3', 'luffi를 선택하면 바로 저장하고 분석해요.'),
     ];
     return Container(
       padding: const EdgeInsets.all(18),
@@ -458,7 +458,7 @@ final class _ScreenshotGuideCard extends StatelessWidget {
               SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '공유가 끝나면 갤러리 원본을 남길지 Trun On에서 직접 선택할 수 있어요.',
+                  '공유가 끝나면 갤러리 원본을 남길지 luffi에서 직접 선택할 수 있어요.',
                   style: TextStyle(
                     color: AppTheme.subtle,
                     fontSize: 12,

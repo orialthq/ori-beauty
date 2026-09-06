@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/app_theme.dart';
+import '../../core/luffi_brand.dart';
 import '../../data/external_app_navigation_service.dart';
 import '../../data/incoming_share_service.dart';
 import '../../data/place_reminder_service.dart';
@@ -113,6 +114,7 @@ final class _HomeShellState extends State<HomeShell>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) return;
+    unawaited(widget.controller.refreshBatchAnalysis());
     final controller = widget.planController;
     if (controller == null) return;
     if (controller.isInitialized) {
@@ -364,8 +366,7 @@ final class _HomeShellState extends State<HomeShell>
     _showMessage(switch (result) {
       SharedSourceDeletionResult.deleted => '갤러리 원본을 삭제했어요.',
       SharedSourceDeletionResult.kept => '갤러리 원본을 그대로 두었어요.',
-      SharedSourceDeletionResult.unavailable =>
-        '이 이미지의 원본은 Trun On에서 삭제할 수 없어요.',
+      SharedSourceDeletionResult.unavailable => '이 이미지의 원본은 luffi에서 삭제할 수 없어요.',
       SharedSourceDeletionResult.failed => '갤러리 원본을 삭제하지 못했어요.',
     });
   }
@@ -404,11 +405,12 @@ final class _HomeShellState extends State<HomeShell>
         surfaceTintColor: Colors.transparent,
         title: const Text('가져온 콘텐츠를 모두 삭제할까요?'),
         content: Text(
-          '데모를 제외한 콘텐츠 $count개와 Trun On이 보관한 이미지 사본이 '
+          '데모를 제외한 콘텐츠 $count개와 luffi가 보관한 이미지 사본이 '
           '삭제돼요. 갤러리 원본과 계획함의 계획은 그대로 남아요. '
           '되돌릴 수 없으니 필요하면 먼저 백업 ZIP을 '
           '내보내 주세요. 현재 앱에서는 ZIP을 바로 복원하는 '
-          '기능은 제공하지 않아요.',
+          '기능은 제공하지 않아요.'
+          '${widget.controller.pendingBatchCount > 0 ? '\n\n서버에 접수된 절약 분석은 취소되지 않아 요금이 발생할 수 있어요.' : ''}',
         ),
         actions: [
           TextButton(
@@ -1203,7 +1205,7 @@ final class _HomeShellState extends State<HomeShell>
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
-          const SnackBar(content: Text('이미지를 정리하고 있어요. 잠시만 기다려 주세요.')),
+          SnackBar(content: Text(_analysisWaitingMessage(capture))),
         );
       return;
     }
@@ -1220,7 +1222,7 @@ final class _HomeShellState extends State<HomeShell>
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
-          const SnackBar(content: Text('이미지를 정리하고 있어요. 잠시만 기다려 주세요.')),
+          SnackBar(content: Text(_analysisWaitingMessage(capture))),
         );
       return;
     }
@@ -1308,6 +1310,11 @@ final class _HomeShellState extends State<HomeShell>
   }
 }
 
+String _analysisWaitingMessage(CaptureRecord capture) =>
+    capture.analysisMode == CaptureAnalysisMode.batch
+    ? '절약 분석을 기다리고 있어요. 접수 후 최대 24시간 걸리며, 완료되면 콘텐츠에서 확인할 수 있어요.'
+    : '이미지를 정리하고 있어요. 잠시만 기다려 주세요.';
+
 /// The bar that slides in from the left.
 ///
 /// Everywhere the app goes, in one list. The tab bar still carries the four a
@@ -1348,9 +1355,7 @@ final class _HomeDrawer extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // The wordmark lives here now. It left home's own header when the
-            // menu took that corner, and a drawer is where an app's name can
-            // sit without spending a row of the screen behind it.
+            // The same mark follows the reader through the app's navigation.
             const Padding(
               padding: EdgeInsets.fromLTRB(24, 26, 24, 22),
               // Shrunk rather than clipped: at a large text size the name and
@@ -1360,16 +1365,10 @@ final class _HomeDrawer extends StatelessWidget {
                 alignment: Alignment.centerLeft,
                 child: Row(
                   children: [
-                    Text(
-                      'TRUN ON',
-                      style: TextStyle(
-                        color: AppTheme.ink,
-                        fontSize: 20,
-                        letterSpacing: -0.6,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    SizedBox(width: 8),
+                    LuffiMark(size: 38),
+                    SizedBox(width: 10),
+                    LuffiWordmark(fontSize: 29),
+                    SizedBox(width: 12),
                     DecoratedBox(
                       decoration: BoxDecoration(
                         color: AppTheme.primarySoft,
@@ -1381,12 +1380,12 @@ final class _HomeDrawer extends StatelessWidget {
                           vertical: 4,
                         ),
                         child: Text(
-                          'BETA',
+                          '미리보기',
                           style: TextStyle(
                             color: AppTheme.primary,
                             fontSize: 11,
-                            letterSpacing: 0.6,
-                            fontWeight: FontWeight.w900,
+                            letterSpacing: -0.1,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ),
@@ -1969,6 +1968,16 @@ final class _CaptureArrivalState {
   }
 
   factory _CaptureArrivalState.from(CaptureRecord capture) {
+    if (capture.status == CaptureStatus.analyzing &&
+        capture.analysisMode == CaptureAnalysisMode.batch) {
+      return const _CaptureArrivalState(
+        title: '절약 분석을 기다리고 있어요',
+        description: '접수 후 최대 24시간 · 완료 후 콘텐츠에서 확인해 주세요',
+        icon: Icons.schedule_rounded,
+        iconColor: AppTheme.primary,
+        iconBackground: AppTheme.primarySoft,
+      );
+    }
     if (capture.status == CaptureStatus.sourceLimited &&
         capture.raw.attachments.isEmpty &&
         capture.normalized.completeness == MaterialCompleteness.linkOnly) {
@@ -2071,12 +2080,12 @@ final class _SourceImageChoiceSheet extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             Text(
-              'Trun On에 안전하게 저장했어요',
+              'luffi에 안전하게 저장했어요',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 6),
             const Text(
-              '갤러리의 원본도 남겨둘까요? 어떤 선택을 해도 Trun On 안의 복사본은 유지돼요.',
+              '갤러리의 원본도 남겨둘까요? 어떤 선택을 해도 luffi 안의 복사본은 유지돼요.',
               style: TextStyle(
                 color: AppTheme.muted,
                 fontSize: 14,

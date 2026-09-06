@@ -3,6 +3,7 @@ import { once } from "node:events";
 import test from "node:test";
 import { createHttpServer } from "../src/http_app.js";
 import { OpenAITransportError } from "../src/errors.js";
+import { AppError } from "../src/errors.js";
 import { validateAnalysisResult } from "../src/result_validation.js";
 import {
   makeValidAnalysis,
@@ -40,6 +41,77 @@ test("health endpoint exposes only non-sensitive service metadata", async (t) =>
   });
   assert.match(response.headers.get("x-request-id"), /^[0-9a-f-]{36}$/);
   assert.equal(response.headers.get("cache-control"), "no-store");
+});
+
+test("batch submission validates an image and returns a durable 202 task receipt", async (t) => {
+  let received;
+  const requestId = "a".repeat(64);
+  const baseUrl = await startServer(t, {
+    batchAnalysisService: {
+      async submit(id, input) {
+        received = { id, input };
+        return { requestId: id, status: "queued" };
+      },
+    },
+  });
+  const response = await fetch(`${baseUrl}/v1/analysis-tasks`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ requestId, input: makeValidRequest() }),
+  });
+  assert.equal(response.status, 202);
+  assert.deepEqual(await response.json(), { requestId, status: "queued" });
+  assert.equal(received.id, requestId);
+  assert.equal(received.input.mimeType, "image/jpeg");
+  assert.equal(received.input.capture.id, "capture-001");
+});
+
+test("batch polling preserves per-photo correlation and nested safe errors", async (t) => {
+  const requestId = "b".repeat(64);
+  const expected = { tasks: [{ requestId, status: "expired", error: { code: "BATCH_EXPIRED", retryable: true } }] };
+  const baseUrl = await startServer(t, {
+    batchAnalysisService: {
+      async status(ids) {
+        assert.deepEqual(ids, [requestId]);
+        return expected;
+      },
+    },
+  });
+  const response = await fetch(`${baseUrl}/v1/analysis-tasks/status`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ requestIds: [requestId] }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), expected);
+});
+
+test("batch routes reject malformed envelopes and preserve idempotency conflicts", async (t) => {
+  const baseUrl = await startServer(t, {
+    batchAnalysisService: {
+      async submit() {
+        throw new AppError("REQUEST_ID_CONFLICT", "다른 요청 ID예요.", { httpStatus: 409 });
+      },
+    },
+  });
+  const post = (body) => fetch(`${baseUrl}/v1/analysis-tasks`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  assert.equal((await post({ requestId: "bad", input: makeValidRequest() })).status, 400);
+  assert.equal((await post({ requestId: "a".repeat(64), input: makeValidRequest(), unknown: true })).status, 400);
+  const conflict = await post({ requestId: "a".repeat(64), input: makeValidRequest() });
+  assert.equal(conflict.status, 409);
+  assert.equal((await conflict.json()).error.code, "REQUEST_ID_CONFLICT");
+});
+
+test("unconfigured batch endpoint returns 503 and never falls back to paid sync", async (t) => {
+  const baseUrl = await startServer(t, {
+    analysisService: { async analyze() { throw new Error("Must not call sync analysis"); } },
+  });
+  const response = await fetch(`${baseUrl}/v1/analysis-tasks`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ requestId: "a".repeat(64), input: makeValidRequest() }),
+  });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, "BATCH_NOT_CONFIGURED");
 });
 
 test("health exposes only the analysis service's aggregate counters", async (t) => {

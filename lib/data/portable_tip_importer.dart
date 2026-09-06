@@ -141,7 +141,7 @@ CaptureRecord captureFromImportedPortableTip(ImportedPortableTip imported) {
       semanticFingerprint: fingerprint,
       wasTruncated: false,
       originalLength: semanticMaterial.length,
-      sourcePackage: 'Trun On',
+      sourcePackage: 'luffi',
     ),
     normalized: NormalizedInput(
       inputId: inputId,

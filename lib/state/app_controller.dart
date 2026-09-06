@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
 import '../data/app_snapshot_store.dart';
+import '../data/batch_content_analysis_service.dart';
 import '../data/content_analysis_service.dart';
 import '../data/demo_catalog.dart';
 import '../data/development_backup_service.dart';
@@ -43,7 +45,7 @@ final class IncomingCaptureBatch {
 final class AppController extends ChangeNotifier {
   /// Keeps image decoding, base64 payloads, and upstream requests bounded on a
   /// phone while still letting a large picker batch make progress in parallel.
-  static const maxConcurrentCaptureAnalyses = 3;
+  static const maxConcurrentCaptureAnalyses = 10;
 
   /// Place lookup is optional follow-up work and stays strictly serial so a
   /// place-heavy picker batch cannot fan out into another request burst.
@@ -58,6 +60,7 @@ final class AppController extends ChangeNotifier {
     this._tagMergeService = const NoTagMergeService(),
     this._tagSenseService = const NoTagSenseService(),
     DevelopmentBackupService? developmentBackupService,
+    this._batchAnalysisService,
   ]) : _captures = [...DemoCatalog.captures],
        _groups = [...DemoCatalog.groups],
        _snapshotStore = snapshotStore ?? InMemoryAppSnapshotStore(),
@@ -72,6 +75,46 @@ final class AppController extends ChangeNotifier {
   final TagMergeService _tagMergeService;
   final TagSenseService _tagSenseService;
   final DevelopmentBackupService _developmentBackupService;
+  final BatchContentAnalysisService? _batchAnalysisService;
+  CaptureAnalysisMode? _selectedAnalysisMode;
+  Timer? _batchPollTimer;
+  bool _pollingBatch = false;
+  bool _disposed = false;
+
+  bool get supportsBatchAnalysis => _batchAnalysisService != null;
+  CaptureAnalysisMode get selectedAnalysisMode =>
+      _selectedAnalysisMode ??
+      (supportsBatchAnalysis
+          ? CaptureAnalysisMode.batch
+          : CaptureAnalysisMode.instant);
+  int get pendingBatchCount => _captures.where(_isPendingBatch).length;
+
+  void selectAnalysisMode(CaptureAnalysisMode mode) {
+    if (mode == CaptureAnalysisMode.batch && !supportsBatchAnalysis) return;
+    _selectedAnalysisMode = mode;
+    notifyListeners();
+  }
+
+  static bool _isPendingBatch(CaptureRecord capture) =>
+      capture.analysisMode == CaptureAnalysisMode.batch &&
+      capture.status == CaptureStatus.analyzing;
+
+  CaptureRecord _withSelectedAnalysisMode(CaptureRecord capture) {
+    if (capture.status != CaptureStatus.analyzing ||
+        selectedAnalysisMode != CaptureAnalysisMode.batch) {
+      return capture;
+    }
+    final random = Random.secure();
+    final requestId = List.generate(
+      32,
+      (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ).join();
+    return capture.copyWith(
+      analysisMode: CaptureAnalysisMode.batch,
+      batchRequestId: requestId,
+      batchStatus: 'pending_upload',
+    );
+  }
 
   /// The sense dictionary: [tagKey] to the words that lead to that tag, the
   /// thing "매운거" is matched against. Filled in the background, one ask per
@@ -829,6 +872,7 @@ final class AppController extends ChangeNotifier {
               ? _contentAnalysisService.analyzeShare(share)
               : _contentAnalysisService.prepareShare(share);
           capture = await _retainAttachments(capture);
+          capture = _withSelectedAnalysisMode(capture);
         } catch (error, stackTrace) {
           // One unreadable item in a large picker batch must not prevent the
           // other selected photos from being imported. Leave this native item
@@ -921,6 +965,7 @@ final class AppController extends ChangeNotifier {
   /// queue, and [maxConcurrentCaptureAnalyses] prevents a large batch from
   /// turning into the same number of simultaneous image requests.
   void _queueCaptureAnalysis(Iterable<String> captureIds) {
+    if (_disposed) return;
     for (final captureId in captureIds) {
       if (!_queuedAnalysisIds.add(captureId)) continue;
       _pendingAnalysisIds.addLast(captureId);
@@ -929,6 +974,7 @@ final class AppController extends ChangeNotifier {
   }
 
   void _startQueuedCaptureAnalyses() {
+    if (_disposed) return;
     while (_activeAnalysisCount < maxConcurrentCaptureAnalyses &&
         _pendingAnalysisIds.isNotEmpty) {
       final captureId = _pendingAnalysisIds.removeFirst();
@@ -955,6 +1001,10 @@ final class AppController extends ChangeNotifier {
   Future<void> _analyzeCapture(String captureId) async {
     final initial = captureById(captureId);
     if (initial == null || initial.status != CaptureStatus.analyzing) {
+      return;
+    }
+    if (initial.analysisMode == CaptureAnalysisMode.batch) {
+      await _submitBatchCapture(initial);
       return;
     }
     try {
@@ -1002,8 +1052,184 @@ final class AppController extends ChangeNotifier {
       debugPrint('Content analysis failed with code: $code');
     }
     await _persistState();
+    if (_disposed) return;
     notifyListeners();
     _queuePlaceEnrichment(captureId);
+  }
+
+  Future<void> _submitBatchCapture(CaptureRecord capture) async {
+    final service = _batchAnalysisService;
+    final requestId = capture.batchRequestId;
+    if (service == null || requestId == null) return;
+    // A stored receipt is queried, never re-created when the app restarts.
+    if (capture.batchStatus != 'pending_upload') {
+      _scheduleBatchPoll();
+      return;
+    }
+    // This also protects retries: the id must be durable before a paid task
+    // can leave the phone. The server treats repeated ids idempotently.
+    if (!await _persistState()) {
+      // The import itself may already be durable. A temporary failure of this
+      // extra safety write must not strand its pending upload indefinitely.
+      _scheduleBatchPoll();
+      return;
+    }
+    if (_disposed) return;
+    final current = captureById(capture.raw.id);
+    if (current == null ||
+        !_isPendingBatch(current) ||
+        current.batchRequestId != requestId ||
+        current.batchStatus != 'pending_upload') {
+      // A deletion, result, or replacement may have landed while this write
+      // waited behind another snapshot. Only the still-current task can leave.
+      _scheduleBatchPoll();
+      return;
+    }
+    try {
+      final response = await service.submit(current, requestId: requestId);
+      if (_disposed) return;
+      _applyBatchResponse(response);
+    } on AnalysisServiceException catch (error) {
+      if (_disposed) return;
+      if (error.code == 'batch_request_conflict') {
+        _applyBatchResponse(
+          BatchAnalysisResponse(
+            requestId: requestId,
+            status: 'submission_unknown',
+          ),
+        );
+      } else if (const {
+        'image_too_large',
+        'source_file_missing',
+        'source_file_changed',
+        'multiple_images_not_supported',
+        'invalid_server_url',
+        'invalid_image',
+      }.contains(error.code)) {
+        _applyBatchResponse(
+          BatchAnalysisResponse(
+            requestId: requestId,
+            status: 'failed',
+            errorCode: error.code,
+          ),
+        );
+      }
+      // Transport errors may occur after the server saved the task. Keep the
+      // same id and query it; never silently fall back to paid instant work.
+    } catch (_) {
+      // A status check safely resolves an ambiguous transport response.
+    }
+    if (_disposed) return;
+    await _persistState();
+    if (_disposed) return;
+    notifyListeners();
+    _scheduleBatchPoll();
+  }
+
+  void _scheduleBatchPoll() {
+    if (_disposed || _batchAnalysisService == null || pendingBatchCount == 0) {
+      _batchPollTimer?.cancel();
+      _batchPollTimer = null;
+      return;
+    }
+    _batchPollTimer ??= Timer(const Duration(seconds: 15), () {
+      _batchPollTimer = null;
+      unawaited(refreshBatchAnalysis());
+    });
+  }
+
+  Future<void> refreshBatchAnalysis() async {
+    final service = _batchAnalysisService;
+    if (_disposed || service == null || _pollingBatch) return;
+    _pollingBatch = true;
+    try {
+      final ids = _captures
+          .where(_isPendingBatch)
+          .where((capture) => !_queuedAnalysisIds.contains(capture.raw.id))
+          .map((capture) => capture.batchRequestId)
+          .whereType<String>()
+          .toList(growable: false);
+      for (var start = 0; start < ids.length; start += 100) {
+        final responses = await service.poll(
+          ids.sublist(start, min(start + 100, ids.length)),
+        );
+        if (_disposed) return;
+        for (final response in responses) {
+          if (response.status == 'missing') {
+            final matching = _captures
+                .where(
+                  (capture) =>
+                      _isPendingBatch(capture) &&
+                      capture.batchRequestId == response.requestId,
+                )
+                .firstOrNull;
+            if (matching?.batchStatus == 'pending_upload') {
+              _queueCaptureAnalysis([matching!.raw.id]);
+            } else if (matching != null) {
+              // Losing a receipt on a restarted/replaced server must not
+              // turn into a second billable job without reconciliation.
+              _applyBatchResponse(
+                BatchAnalysisResponse(
+                  requestId: response.requestId,
+                  status: 'submission_unknown',
+                ),
+              );
+            }
+          } else {
+            _applyBatchResponse(response);
+          }
+        }
+      }
+      await _persistState();
+      if (!_disposed) notifyListeners();
+    } catch (_) {
+      // Offline is a pending state, not an analysis failure.
+    } finally {
+      _pollingBatch = false;
+      _scheduleBatchPoll();
+    }
+  }
+
+  void _applyBatchResponse(BatchAnalysisResponse response) {
+    final index = _captures.indexWhere(
+      (capture) =>
+          _isPendingBatch(capture) &&
+          capture.batchRequestId == response.requestId,
+    );
+    if (index == -1 || _disposed) return;
+    final current = _captures[index];
+    if (const {
+      'completed',
+      'failed',
+      'expired',
+      'cancelled',
+    }.contains(response.status)) {
+      final analysis = response.status == 'completed'
+          ? _spelledLikeLibrary(response.toAnalysisRun(current))
+          : AnalysisRun(
+              id: 'analysis-batch-${response.requestId}-failed',
+              inputId: current.raw.id,
+              normalizerVersion: current.normalized.normalizerVersion,
+              analyzerVersion: 'luna-structured-batch-v1',
+              status: AnalysisRunStatus.failed,
+              completedAt: DateTime.now(),
+              evidence: const [],
+              productMentions: const [],
+              statements: const [],
+              disclosure: DisclosureObservation.unknown,
+              failureCode: response.errorCode ?? 'batch_${response.status}',
+            );
+      _captures[index] = current.copyWith(
+        batchStatus: response.status,
+        analysis: analysis,
+        status: analysis.status == AnalysisRunStatus.failed
+            ? CaptureStatus.failed
+            : _statusForCompletedAnalysis(current, analysis),
+      );
+      _queuePlaceEnrichment(current.raw.id);
+    } else {
+      _captures[index] = current.copyWith(batchStatus: response.status);
+    }
   }
 
   void _queuePlaceEnrichment(String captureId) {
@@ -1660,6 +1886,10 @@ final class AppController extends ChangeNotifier {
       return;
     }
     final capture = _captures[index];
+    if (_isPendingBatch(capture)) {
+      unawaited(refreshBatchAnalysis());
+      return;
+    }
     final share = IncomingShare(
       id: capture.raw.transportEventId,
       receivedAt: capture.raw.receivedAt,
@@ -1683,8 +1913,8 @@ final class AppController extends ChangeNotifier {
             share,
             origin: capture.raw.origin,
           );
-    final reanalyzed = reanalyzedWithoutFolder.copyWith(
-      tagOverride: capture.tagOverride,
+    final reanalyzed = _withSelectedAnalysisMode(
+      reanalyzedWithoutFolder.copyWith(tagOverride: capture.tagOverride),
     );
     _captures[index] = reanalyzed;
     unawaited(_persistState());
@@ -1726,6 +1956,9 @@ final class AppController extends ChangeNotifier {
         };
         final analyzed = analyzedWithoutFolder.copyWith(
           tagOverride: persisted.tagOverride,
+          analysisMode: persisted.analysisMode,
+          batchRequestId: persisted.batchRequestId,
+          batchStatus: persisted.batchStatus,
         );
         if (analyzed.status == CaptureStatus.analyzing) {
           pendingAnalysisIds.add(analyzed.raw.id);
@@ -1988,6 +2221,9 @@ final class AppController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _batchPollTimer?.cancel();
+    _pendingAnalysisIds.clear();
     unawaited(_incomingSubscription?.cancel());
     unawaited(_portableTipSubscription?.cancel());
     unawaited(_incomingShareService.dispose());

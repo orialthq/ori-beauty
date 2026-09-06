@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <title>luffi app icon</title>
+  <path fill="#B6E8D8" d="M0 0H100V100H0Z"/>
+  <g transform="translate(4 4) scale(.92)" fill="#153C35">
+    <path d="M60 14C42 22 27 40 21 59C31 53 41 52 50 54C51 37 54 24 60 14Z"/>
+    <path d="M65 30C63 41 62 51 62 62C69 58 76 58 84 60C76 50 70 40 65 30Z"/>
+    <path d="M23 70C41 77 65 78 83 68C75 81 57 88 40 82C32 80 26 75 23 70Z"/>
+  </g>
+</svg>

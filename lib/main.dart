@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 
 import 'app/ori_beauty_app.dart';
 import 'data/app_snapshot_store.dart';
+import 'data/batch_content_analysis_service.dart';
 import 'data/incoming_share_service.dart';
 import 'data/portable_tip_service.dart';
 import 'data/place_enrichment_service.dart';
@@ -28,6 +29,10 @@ void main() {
     const RemotePlaceEnrichmentService(),
     const RemoteTagMergeService(),
     const RemoteTagSenseService(),
+    null,
+    RemoteBatchContentAnalysisService(
+      vocabulary: () => controller.tagVocabulary,
+    ),
   );
   final planController = PlanController(
     store: const MethodChannelTriggerPlanStore(),

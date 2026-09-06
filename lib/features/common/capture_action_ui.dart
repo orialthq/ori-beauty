@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/app_theme.dart';
+import '../../domain/models.dart';
 import '../../state/app_controller.dart';
 
 enum CaptureListAction { organize, delete }
@@ -55,11 +56,18 @@ Future<bool> confirmCaptureDeletion(
   required AppController controller,
   required String captureId,
 }) async {
+  final capture = controller.captureById(captureId);
+  final batchPending =
+      capture?.analysisMode == CaptureAnalysisMode.batch &&
+      capture?.status == CaptureStatus.analyzing;
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (context) => AlertDialog(
       title: const Text('이 콘텐츠를 삭제할까요?'),
-      content: const Text('Trun On에 보관된 내용만 삭제해요. 갤러리 원본은 그대로 남아요.'),
+      content: Text(
+        'luffi에 보관된 내용만 삭제해요. 갤러리 원본은 그대로 남아요.'
+        '${batchPending ? '\n\n이미 서버에 접수된 절약 분석은 취소되지 않아 요금이 발생할 수 있어요.' : ''}',
+      ),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(false),

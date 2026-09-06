@@ -74,8 +74,10 @@ void main() {
     await tester.tap(find.byKey(const Key('shell-menu-button')));
     await tester.pumpAndSettle();
 
-    // The wordmark moved in here when the menu took its corner.
-    expect(find.text('TRUN ON'), findsOneWidget);
+    expect(
+      find.descendant(of: find.byType(Drawer), matching: find.text('luffi')),
+      findsOneWidget,
+    );
     // The four the tab bar carries, plus the two that only ever had doors.
     for (final label in ['홈', '공유함', '정리함', '계획함', '콘텐츠', '지난함']) {
       expect(find.byKey(Key('drawer-item-$label')), findsOneWidget);
