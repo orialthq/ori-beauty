@@ -7,13 +7,16 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import com.orialthq.ori_beauty.share.CapturePickerBatchPolicy
 import com.orialthq.ori_beauty.share.IncomingShareIngestor
+import com.orialthq.ori_beauty.share.IncomingSharePayload
 import com.orialthq.ori_beauty.share.IncomingShareRoutePolicy
 import com.orialthq.ori_beauty.share.IncomingShareStore
 import com.orialthq.ori_beauty.trigger.TriggerSchedulerChannel
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
     private var incomingChannel: MethodChannel? = null
@@ -43,6 +46,7 @@ class MainActivity : FlutterActivity() {
     }
     private var pendingCaptureNotificationId: String? = null
     private var pendingCapturePickerResult: MethodChannel.Result? = null
+    private var capturePickerInFlight = false
     private var pendingLocationPermissionResult: MethodChannel.Result? = null
     private var pendingNotificationPermissionResult: MethodChannel.Result? = null
     private var notificationPermissionRequestInFlight = false
@@ -294,26 +298,40 @@ class MainActivity : FlutterActivity() {
             return
         }
         if (resultCode != RESULT_OK) {
-            pendingCapturePickerResult?.success(false)
-            pendingCapturePickerResult = null
+            completeCapturePicker(
+                CapturePickerBatchPolicy.resultMap(
+                    selectedCount = 0,
+                    importedCount = 0,
+                    rejectedCount = 0,
+                ),
+            )
             return
         }
-        val selectedUri = data?.data
-        if (selectedUri == null) {
-            pendingCapturePickerResult?.success(false)
-            pendingCapturePickerResult = null
+        val selectedUris = selectedCaptureUris(data)
+        if (selectedUris.isEmpty()) {
+            completeCapturePicker(
+                CapturePickerBatchPolicy.resultMap(
+                    selectedCount = 0,
+                    importedCount = 0,
+                    rejectedCount = 0,
+                ),
+            )
             return
         }
-        val mimeType = contentResolver.getType(selectedUri) ?: "image/*"
-        val accepted =
-            stageIncomingShare(
-            Intent(Intent.ACTION_VIEW, selectedUri).apply {
-                type = mimeType
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            },
-        )
-        pendingCapturePickerResult?.success(accepted)
-        pendingCapturePickerResult = null
+        if (selectedUris.size > CapturePickerBatchPolicy.MAX_SELECTION) {
+            pendingCapturePickerResult?.error(
+                "capture_picker_too_many",
+                "Choose no more than ${CapturePickerBatchPolicy.MAX_SELECTION} images.",
+                mapOf(
+                    "selectedCount" to selectedUris.size,
+                    "maxSelection" to CapturePickerBatchPolicy.MAX_SELECTION,
+                ),
+            )
+            pendingCapturePickerResult = null
+            capturePickerInFlight = false
+            return
+        }
+        importCapturePickerBatch(selectedUris)
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
@@ -331,7 +349,14 @@ class MainActivity : FlutterActivity() {
             return
         }
         if (intent?.action == ACTION_PICK_CAPTURE) {
-            launchCapturePicker()
+            if (!capturePickerInFlight) {
+                capturePickerInFlight = true
+                try {
+                    launchCapturePicker()
+                } catch (_: Exception) {
+                    capturePickerInFlight = false
+                }
+            }
             return
         }
         if (portableTipStore.isPortableIntent(intent)) {
@@ -348,18 +373,25 @@ class MainActivity : FlutterActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 Intent(MediaStore.ACTION_PICK_IMAGES).apply {
                     type = "image/*"
+                    putExtra(
+                        MediaStore.EXTRA_PICK_IMAGES_MAX,
+                        CapturePickerBatchPolicy.systemSelectionLimit(
+                            MediaStore.getPickImagesMaxLimit(),
+                        ),
+                    )
                 }
             } else {
                 Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = "image/*"
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                 }
             }
         startActivityForResult(pickerIntent, PICK_CAPTURE_REQUEST_CODE)
     }
 
     private fun presentCapturePicker(result: MethodChannel.Result) {
-        if (pendingCapturePickerResult != null) {
+        if (capturePickerInFlight) {
             result.error(
                 "capture_picker_in_progress",
                 "A capture picker is already open.",
@@ -367,17 +399,104 @@ class MainActivity : FlutterActivity() {
             )
             return
         }
+        capturePickerInFlight = true
         pendingCapturePickerResult = result
         try {
             launchCapturePicker()
         } catch (_: Exception) {
             pendingCapturePickerResult = null
+            capturePickerInFlight = false
             result.error(
                 "capture_picker_unavailable",
                 "The capture picker could not be presented.",
                 null,
             )
         }
+    }
+
+    private fun selectedCaptureUris(data: Intent?): List<Uri> {
+        val clipData = data?.clipData
+        if (clipData != null) {
+            return buildList {
+                for (index in 0 until clipData.itemCount) {
+                    clipData.getItemAt(index).uri?.let(::add)
+                }
+            }
+        }
+        return listOfNotNull(data?.data)
+    }
+
+    private fun importCapturePickerBatch(selectedUris: List<Uri>) {
+        val sourcePackage = referrer?.host
+        captureImportExecutor.execute {
+            val payloads = mutableListOf<IncomingSharePayload>()
+            var batchBytes = 0L
+            selectedUris.forEach { selectedUri ->
+                val payload =
+                    runCatching {
+                        val mimeType =
+                            runCatching { contentResolver.getType(selectedUri) }
+                                .getOrNull() ?: "image/*"
+                        incomingShareIngestor.ingest(
+                            intent =
+                                Intent(Intent.ACTION_VIEW, selectedUri).apply {
+                                    type = mimeType
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                },
+                            sourcePackage = sourcePackage,
+                        )
+                    }.getOrNull()
+                if (payload != null) {
+                    val payloadBytes = payload.attachments.sumOf { it.byteSize }
+                    if (
+                        CapturePickerBatchPolicy.canAccept(
+                            currentBatchBytes = batchBytes,
+                            payloadBytes = payloadBytes,
+                            usableBytesAfterPayloadCopy = noBackupFilesDir.usableSpace,
+                        )
+                    ) {
+                        payloads += payload
+                        batchBytes += payloadBytes
+                    } else {
+                        incomingShareIngestor.deleteAttachments(payload.attachments)
+                    }
+                }
+            }
+            val committed =
+                payloads.isNotEmpty() &&
+                    runCatching { incomingStore.appendAll(payloads) }.getOrDefault(false)
+            if (!committed) {
+                payloads.forEach { payload ->
+                    incomingShareIngestor.deleteAttachments(payload.attachments)
+                }
+            }
+
+            val importedCount = if (committed) payloads.size else 0
+            val platformResult =
+                CapturePickerBatchPolicy.resultMap(
+                    selectedCount = selectedUris.size,
+                    importedCount = importedCount,
+                    rejectedCount = selectedUris.size - importedCount,
+                )
+            runOnUiThread {
+                if (committed) {
+                    if (selectedUris.size == 1 && payloads.size == 1) {
+                        sharedMediaDeletionManager.remember(
+                            payloads.single().id,
+                            selectedUris,
+                        )
+                    }
+                    incomingChannel?.invokeMethod("pendingSharesChanged", null)
+                }
+                completeCapturePicker(platformResult)
+            }
+        }
+    }
+
+    private fun completeCapturePicker(platformResult: Map<String, Int>) {
+        pendingCapturePickerResult?.success(platformResult)
+        pendingCapturePickerResult = null
+        capturePickerInFlight = false
     }
 
     private fun locationPermissionState(): Map<String, Any> {
@@ -841,5 +960,6 @@ class MainActivity : FlutterActivity() {
         private const val SOURCE_DELETE_REQUEST_CODE = 4112
         private const val NOTIFICATION_PREFERENCES_NAME = "capture_notifications"
         private const val KEY_NOTIFICATION_PERMISSION_REQUESTED = "permission_requested"
+        private val captureImportExecutor = Executors.newSingleThreadExecutor()
     }
 }

@@ -80,6 +80,9 @@ void main() {
     for (final label in ['홈', '공유함', '정리함', '계획함', '콘텐츠', '지난함']) {
       expect(find.byKey(Key('drawer-item-$label')), findsOneWidget);
     }
+    expect(find.text('개발 도구'), findsOneWidget);
+    expect(find.text('콘텐츠 전체 백업(ZIP)'), findsOneWidget);
+    expect(find.text('가져온 콘텐츠 전체 삭제'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('drawer-item-계획함')));
     await tester.pumpAndSettle();

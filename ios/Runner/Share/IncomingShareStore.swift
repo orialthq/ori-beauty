@@ -44,11 +44,25 @@ final class IncomingShareStore {
 
   @discardableResult
   func append(_ payload: IncomingSharePayload) -> Bool {
+    appendAll([payload])
+  }
+
+  /// Commits a picker batch with one atomic queue-file replacement. This keeps
+  /// Dart from observing only part of a multi-image selection.
+  @discardableResult
+  func appendAll(_ payloads: [IncomingSharePayload]) -> Bool {
+    guard !payloads.isEmpty else { return true }
+
     lock.lock()
     defer { lock.unlock() }
 
     var pending = readArray()
-    pending.append([
+    pending.append(contentsOf: payloads.map(Self.storedItem))
+    return writeArray(pending)
+  }
+
+  private static func storedItem(_ payload: IncomingSharePayload) -> [String: Any] {
+    [
       "id": payload.id,
       "receivedAtEpochMs": payload.receivedAtEpochMs,
       "sharedText": payload.sharedText,
@@ -69,8 +83,7 @@ final class IncomingShareStore {
           "sha256": attachment.sha256,
         ] as [String: Any]
       },
-    ])
-    return writeArray(pending)
+    ]
   }
 
   /// Platform maps consumed by `IncomingShare.fromPlatformMap` on the Dart side.
@@ -80,7 +93,8 @@ final class IncomingShareStore {
 
     return readArray().compactMap { item in
       guard let id = item["id"] as? String, !id.isEmpty,
-        let receivedAtEpochMs = item["receivedAtEpochMs"] as? Int64 ?? (item["receivedAtEpochMs"] as? Int).map(Int64.init),
+        let receivedAtEpochMs = item["receivedAtEpochMs"] as? Int64
+          ?? (item["receivedAtEpochMs"] as? Int).map(Int64.init),
         let sharedText = item["sharedText"] as? String
       else {
         return nil
@@ -143,7 +157,8 @@ final class IncomingShareStore {
       else {
         return nil
       }
-      let byteSize = attachment["byteSize"] as? Int64
+      let byteSize =
+        attachment["byteSize"] as? Int64
         ?? (attachment["byteSize"] as? Int).map(Int64.init)
         ?? 0
       return [

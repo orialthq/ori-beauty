@@ -61,12 +61,58 @@ void main() {
       ),
     );
 
-    final captureId = await captureAdded;
+    final batch = await captureAdded;
+    final captureId = batch.primaryCaptureId;
 
     expect(controller.filter, CaptureFilter.all);
     expect(
       controller.captureById(captureId)?.raw.transportEventId,
       'share-opened-screenshot',
+    );
+  });
+
+  test('announces one UI event for one multi-capture drain', () async {
+    service
+      ..add(
+        IncomingShare(
+          id: 'picker-batch-first',
+          receivedAt: DateTime(2026, 9, 6),
+          sharedText: '첫 번째 사진',
+          discoveredUrl: null,
+        ),
+      )
+      ..add(
+        IncomingShare(
+          id: 'picker-batch-second',
+          receivedAt: DateTime(2026, 9, 6),
+          sharedText: '두 번째 사진',
+          discoveredUrl: null,
+        ),
+      );
+    final announcements = <IncomingCaptureBatch>[];
+    final subscription = controller.incomingCaptureAdded.listen(
+      announcements.add,
+    );
+    addTearDown(subscription.cancel);
+
+    await controller.initialize();
+
+    expect(announcements, hasLength(1));
+    final announcement = announcements.single;
+    expect(announcement.captureIds, hasLength(2));
+    expect(
+      announcement.captureIds
+          .map(controller.captureById)
+          .whereType<CaptureRecord>()
+          .map((capture) => capture.raw.transportEventId),
+      ['picker-batch-first', 'picker-batch-second'],
+    );
+    expect(
+      controller
+          .captureById(announcement.primaryCaptureId)
+          ?.raw
+          .transportEventId,
+      'picker-batch-second',
     );
   });
 
@@ -468,12 +514,13 @@ void main() {
       ),
     );
     await failingController.initialize();
-    final capture = failingController.captures.firstWhere(
-      (item) => item.raw.transportEventId == 'share-save-failure',
+
+    expect(
+      failingController.captures.where(
+        (item) => item.raw.transportEventId == 'share-save-failure',
+      ),
+      isEmpty,
     );
-
-    await failingController.keepUnresolved(capture.raw.id);
-
     expect(await nativeService.drainPending(), hasLength(1));
   });
 
@@ -710,6 +757,269 @@ void main() {
     );
     expect(await imageService.drainPending(), hasLength(1));
   });
+
+  test('one invalid image does not block the rest of a picker batch', () async {
+    final originalDebugPrint = debugPrint;
+    debugPrint = (message, {wrapWidth}) {};
+    addTearDown(() => debugPrint = originalDebugPrint);
+    final temporaryRoot = await Directory.systemTemp.createTemp(
+      'ori-image-batch-retention-',
+    );
+    addTearDown(() async {
+      if (await temporaryRoot.exists()) {
+        await temporaryRoot.delete(recursive: true);
+      }
+    });
+    final incomingDirectory = Directory(
+      '${temporaryRoot.path}${Platform.pathSeparator}'
+      'incoming_share_attachments',
+    );
+    await incomingDirectory.create();
+    final invalidSource = File(
+      '${incomingDirectory.path}${Platform.pathSeparator}invalid.jpg',
+    );
+    final validSource = File(
+      '${incomingDirectory.path}${Platform.pathSeparator}valid.jpg',
+    );
+    await invalidSource.writeAsBytes([0xff, 0xd8, 0xff], flush: true);
+    await validSource.writeAsBytes([0xff, 0xd8, 0xff], flush: true);
+
+    final snapshotStore = InMemoryAppSnapshotStore();
+    final imageService = InMemoryIncomingShareService()
+      ..add(
+        IncomingShare(
+          id: 'share-batch-invalid',
+          receivedAt: DateTime(2026, 9, 6),
+          sharedText: '',
+          discoveredUrl: null,
+          mimeType: 'image/jpeg',
+          shareKind: ShareKind.image,
+          attachments: [
+            IncomingAttachment(
+              id: 'attachment-batch-invalid',
+              filePath: invalidSource.path,
+              mimeType: 'image/jpeg',
+              byteSize: 4,
+              width: 1,
+              height: 1,
+              sha256: List.filled(64, 'd').join(),
+            ),
+          ],
+        ),
+      )
+      ..add(
+        IncomingShare(
+          id: 'share-batch-valid',
+          receivedAt: DateTime(2026, 9, 6),
+          sharedText: '',
+          discoveredUrl: null,
+          mimeType: 'image/jpeg',
+          shareKind: ShareKind.image,
+          attachments: [
+            IncomingAttachment(
+              id: 'attachment-batch-valid',
+              filePath: validSource.path,
+              mimeType: 'image/jpeg',
+              byteSize: 3,
+              width: 1,
+              height: 1,
+              sha256: List.filled(64, 'e').join(),
+            ),
+          ],
+        ),
+      );
+    final imageController = AppController(
+      imageService,
+      const BaselineContentAnalysisService(),
+      snapshotStore,
+    );
+    addTearDown(imageController.dispose);
+
+    await imageController.initialize();
+
+    expect(
+      imageController.captures.where(
+        (capture) => capture.raw.transportEventId == 'share-batch-invalid',
+      ),
+      isEmpty,
+    );
+    expect(
+      imageController.captures.where(
+        (capture) => capture.raw.transportEventId == 'share-batch-valid',
+      ),
+      hasLength(1),
+    );
+    expect((await imageService.drainPending()).map((share) => share.id), [
+      'share-batch-invalid',
+    ]);
+    expect(snapshotStore.snapshot, contains('share-batch-valid'));
+    expect(snapshotStore.snapshot, isNot(contains('share-batch-invalid')));
+  });
+
+  test('acknowledge failure does not leave a saved image analyzing', () async {
+    final originalDebugPrint = debugPrint;
+    debugPrint = (message, {wrapWidth}) {};
+    addTearDown(() => debugPrint = originalDebugPrint);
+    final temporaryRoot = await Directory.systemTemp.createTemp(
+      'ori-image-ack-failure-',
+    );
+    addTearDown(() async {
+      if (await temporaryRoot.exists()) {
+        await temporaryRoot.delete(recursive: true);
+      }
+    });
+    final incomingDirectory = Directory(
+      '${temporaryRoot.path}${Platform.pathSeparator}'
+      'incoming_share_attachments',
+    );
+    await incomingDirectory.create();
+    final source = File('${incomingDirectory.path}/source.jpg');
+    await source.writeAsBytes([0xff, 0xd8, 0xff], flush: true);
+    final imageService = _RecordingIncomingShareService()
+      ..failAcknowledge = true
+      ..add(
+        IncomingShare(
+          id: 'share-ack-failure',
+          receivedAt: DateTime(2026, 9, 6),
+          sharedText: '',
+          discoveredUrl: null,
+          mimeType: 'image/jpeg',
+          shareKind: ShareKind.image,
+          attachments: [
+            IncomingAttachment(
+              id: 'attachment-ack-failure',
+              filePath: source.path,
+              mimeType: 'image/jpeg',
+              byteSize: 3,
+              width: 1,
+              height: 1,
+              sha256: List.filled(64, 'f').join(),
+            ),
+          ],
+        ),
+      );
+    final imageController = AppController(
+      imageService,
+      const _StructuredAnalysisService(),
+      InMemoryAppSnapshotStore(),
+    );
+    addTearDown(imageController.dispose);
+
+    await imageController.initialize();
+    await _waitUntil(() {
+      final capture = imageController.captures.where(
+        (item) => item.raw.transportEventId == 'share-ack-failure',
+      );
+      return capture.isNotEmpty &&
+          capture.single.status != CaptureStatus.analyzing;
+    });
+
+    final capture = imageController.captures.firstWhere(
+      (item) => item.raw.transportEventId == 'share-ack-failure',
+    );
+    expect(capture.status, CaptureStatus.needsReview);
+    expect(capture.analysis?.structuredContent, isNotNull);
+    expect(await imageService.drainPending(), hasLength(1));
+
+    expect(await imageController.clearAllUserCaptures(), isFalse);
+    expect(imageController.captureById(capture.raw.id), isNotNull);
+    expect(await imageService.drainPending(), hasLength(1));
+
+    imageService.failAcknowledge = false;
+    expect(await imageController.clearAllUserCaptures(), isTrue);
+    expect(imageController.userCaptureCount, 0);
+    expect(await imageService.drainPending(), isEmpty);
+  });
+
+  test(
+    'a blocked analysis does not block the next pending-share drain',
+    () async {
+      final temporaryRoot = await Directory.systemTemp.createTemp(
+        'ori-image-analysis-queue-',
+      );
+      addTearDown(() async {
+        if (await temporaryRoot.exists()) {
+          await temporaryRoot.delete(recursive: true);
+        }
+      });
+      final incomingDirectory = Directory(
+        '${temporaryRoot.path}${Platform.pathSeparator}'
+        'incoming_share_attachments',
+      );
+      await incomingDirectory.create();
+      final firstSource = File('${incomingDirectory.path}/first.jpg');
+      final secondSource = File('${incomingDirectory.path}/second.jpg');
+      await firstSource.writeAsBytes([0xff, 0xd8, 0xff], flush: true);
+      await secondSource.writeAsBytes([0xff, 0xd8, 0xfe], flush: true);
+
+      IncomingShare imageShare(String id, File source, String hashCharacter) =>
+          IncomingShare(
+            id: id,
+            receivedAt: DateTime(2026, 9, 6),
+            sharedText: '',
+            discoveredUrl: null,
+            mimeType: 'image/jpeg',
+            shareKind: ShareKind.image,
+            attachments: [
+              IncomingAttachment(
+                id: 'attachment-$id',
+                filePath: source.path,
+                mimeType: 'image/jpeg',
+                byteSize: 3,
+                width: 1,
+                height: 1,
+                sha256: List.filled(64, hashCharacter).join(),
+              ),
+            ],
+          );
+
+      final imageService = _RecordingIncomingShareService()
+        ..add(imageShare('share-queue-first', firstSource, '1'));
+      final analysisService = _GateFirstAnalysisService();
+      final imageController = AppController(
+        imageService,
+        analysisService,
+        InMemoryAppSnapshotStore(),
+      );
+      addTearDown(imageController.dispose);
+
+      await imageController.initialize();
+      await _waitUntil(() => analysisService.analysisCalls == 1);
+      imageService.add(imageShare('share-queue-second', secondSource, '2'));
+      await _waitUntil(
+        () => imageController.captures.any(
+          (capture) => capture.raw.transportEventId == 'share-queue-second',
+        ),
+      );
+
+      expect(await imageService.drainPending(), isEmpty);
+      expect(
+        imageController.captures
+            .where(
+              (capture) => capture.raw.transportEventId == 'share-queue-second',
+            )
+            .single
+            .status,
+        CaptureStatus.analyzing,
+      );
+
+      analysisService.releaseFirst();
+      await _waitUntil(
+        () => imageController.captures
+            .where((capture) => capture.raw.origin != CaptureOrigin.demo)
+            .every((capture) => capture.status != CaptureStatus.analyzing),
+      );
+      expect(analysisService.analysisCalls, 2);
+    },
+  );
+}
+
+Future<void> _waitUntil(bool Function() predicate) async {
+  for (var attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  fail('Timed out waiting for the asynchronous controller operation.');
 }
 
 final class _StructuredAnalysisService implements ContentAnalysisService {
@@ -776,6 +1086,44 @@ final class _StructuredAnalysisService implements ContentAnalysisService {
   );
 }
 
+final class _GateFirstAnalysisService implements ContentAnalysisService {
+  static const _baseline = BaselineContentAnalysisService();
+  final Completer<AnalysisRun> _firstAnalysis = Completer<AnalysisRun>();
+  CaptureRecord? _firstCapture;
+  var analysisCalls = 0;
+
+  @override
+  CaptureRecord analyzeShare(
+    IncomingShare share, {
+    CaptureOrigin origin = CaptureOrigin.androidShare,
+  }) => _baseline.analyzeShare(share, origin: origin);
+
+  @override
+  CaptureRecord prepareShare(
+    IncomingShare share, {
+    CaptureOrigin origin = CaptureOrigin.androidShare,
+  }) => _baseline.prepareShare(share, origin: origin);
+
+  @override
+  Future<AnalysisRun> analyze(CaptureRecord capture) {
+    analysisCalls += 1;
+    if (analysisCalls == 1) {
+      _firstCapture = capture;
+      return _firstAnalysis.future;
+    }
+    return Future<AnalysisRun>.value(
+      _StructuredAnalysisService._analysisFor(capture),
+    );
+  }
+
+  void releaseFirst() {
+    final capture = _firstCapture;
+    if (capture != null && !_firstAnalysis.isCompleted) {
+      _firstAnalysis.complete(_StructuredAnalysisService._analysisFor(capture));
+    }
+  }
+}
+
 final class _RecordingIncomingShareService implements IncomingShareService {
   final _pendingController = StreamController<void>.broadcast();
   final _shares = <IncomingShare>[];
@@ -795,15 +1143,25 @@ final class _RecordingIncomingShareService implements IncomingShareService {
 
   var presentCapturePickerCount = 0;
   var capturePickerAccepts = false;
+  var failAcknowledge = false;
 
   @override
-  Future<bool> presentCapturePicker() async {
+  Future<CapturePickerResult> presentCapturePicker() async {
     presentCapturePickerCount += 1;
-    return capturePickerAccepts;
+    return capturePickerAccepts
+        ? const CapturePickerResult(
+            selectedCount: 1,
+            importedCount: 1,
+            rejectedCount: 0,
+          )
+        : const CapturePickerResult.cancelled();
   }
 
   @override
   Future<void> acknowledge(Iterable<String> ids) async {
+    if (failAcknowledge) {
+      throw StateError('simulated acknowledge failure');
+    }
     final acknowledged = ids.toSet();
     _shares.removeWhere((share) => acknowledged.contains(share.id));
   }

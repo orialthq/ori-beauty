@@ -3,9 +3,11 @@ import 'dart:io';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/formatters.dart';
+import '../../data/incoming_share_service.dart';
 import '../../domain/models.dart';
 import '../../domain/portable_tip_package.dart';
 import '../../state/app_controller.dart';
@@ -134,21 +136,41 @@ final class InboxScreen extends StatelessWidget {
     BuildContext context,
     AppController controller,
   ) async {
-    final captureId = await showModalBottomSheet<String>(
+    final result = await showModalBottomSheet<Object>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
       builder: (_) => _ManualInputSheet(controller: controller),
     );
-    if (captureId == null || !context.mounted) {
+    if (result == null || !context.mounted) {
       return;
     }
+    if (result is CapturePickerResult) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(content: Text(_capturePickerResultMessage(result))),
+        );
+      return;
+    }
+    if (result is! String) return;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) =>
-            AnalysisReviewScreen(controller: controller, captureId: captureId),
+            AnalysisReviewScreen(controller: controller, captureId: result),
       ),
     );
+  }
+
+  static String _capturePickerResultMessage(CapturePickerResult result) {
+    if (result.importedCount == 0) {
+      return '선택한 사진 ${result.rejectedCount}장을 가져오지 못했어요.';
+    }
+    if (result.rejectedCount > 0) {
+      return '사진 ${result.importedCount}장을 가져왔어요. '
+          '${result.rejectedCount}장은 가져오지 못했어요.';
+    }
+    return '사진 ${result.importedCount}장을 가져왔어요.';
   }
 
   void _openCapture(BuildContext context, CaptureRecord capture) {
@@ -706,10 +728,23 @@ final class _ManualInputSheetState extends State<_ManualInputSheet> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.image_rounded, size: 20),
-                  label: Text(_pickingCapture ? '스크린샷을 읽고 있어요…' : '스크린샷 가져오기'),
+                  label: Text(
+                    _pickingCapture ? '사진을 가져오는 중…' : '갤러리에서 사진 여러 장 가져오기',
+                  ),
                 ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 8),
+              const Text(
+                '한 번에 최대 ${CapturePickerResult.maxSelectionCount}장·'
+                '${CapturePickerResult.maxBatchSizeMegabytes}MB까지 선택할 수 있어요. '
+                '여러 장을 가져와도 갤러리 원본은 그대로 남아요.',
+                style: TextStyle(
+                  color: AppTheme.muted,
+                  fontSize: 12,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 12),
             ],
             SizedBox(
               width: double.infinity,
@@ -791,22 +826,36 @@ final class _ManualInputSheetState extends State<_ManualInputSheet> {
   Future<void> _pickCapture() async {
     setState(() => _pickingCapture = true);
     try {
-      final accepted = await widget.controller.presentCapturePicker();
+      final result = await widget.controller.presentCapturePicker();
       if (!mounted) return;
-      if (!accepted) {
-        // Cancelling the picker is the common case and needs no message; a
-        // rejected image does, and the two are indistinguishable here.
+      if (result.wasCancelled) {
+        // Cancelling the picker is a normal path, so leave the sheet in place
+        // without adding a warning.
         return;
       }
-      // The image is already in the pending queue. Closing the sheet lets the
-      // controller surface the analysis state card the same way a share does.
-      Navigator.of(context).pop();
+      // Images are already in the pending queue. Return the counts so the
+      // parent screen can confirm full or partial success after this closes.
+      Navigator.of(context).pop(result);
+    } on PlatformException catch (error, stackTrace) {
+      if (!mounted) return;
+      final exceededSelectionLimit =
+          error.code == 'capture_picker_too_many' || error.code == 'too_many';
+      if (!exceededSelectionLimit) {
+        debugPrint('Capture picker failed: $error\n$stackTrace');
+      }
+      final message = exceededSelectionLimit
+          ? '사진은 한 번에 최대 '
+                '${CapturePickerResult.maxSelectionCount}장까지 선택할 수 있어요.'
+          : '사진을 가져오지 못했어요.';
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(message)));
     } on Object catch (error, stackTrace) {
       debugPrint('Capture picker failed: $error\n$stackTrace');
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('스크린샷을 가져오지 못했어요.')));
+        ..showSnackBar(const SnackBar(content: Text('사진을 가져오지 못했어요.')));
     } finally {
       if (mounted) {
         setState(() => _pickingCapture = false);

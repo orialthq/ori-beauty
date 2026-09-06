@@ -3,6 +3,26 @@ import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
 
+struct CapturePickerImportResult: Equatable {
+  let selectedCount: Int
+  let importedCount: Int
+  let rejectedCount: Int
+
+  static let cancelled = CapturePickerImportResult(
+    selectedCount: 0,
+    importedCount: 0,
+    rejectedCount: 0
+  )
+
+  var platformMap: [String: Int] {
+    [
+      "selectedCount": selectedCount,
+      "importedCount": importedCount,
+      "rejectedCount": rejectedCount,
+    ]
+  }
+}
+
 /// iOS entry point for the picker path Android exposes through its quick settings
 /// tile (`MainActivity.launchCapturePicker`).
 ///
@@ -13,6 +33,31 @@ import UniformTypeIdentifiers
 /// still what acknowledges an input.
 final class CapturePickerPresenter: NSObject {
   static let shared = CapturePickerPresenter()
+  static let maxSelectionCount = 100
+  static let maxBatchBytes: Int64 = 512 * 1024 * 1024
+  static let minimumFreeBytesAfterNativeImport: Int64 = 128 * 1024 * 1024
+
+  static func canAccept(
+    currentBatchBytes: Int64,
+    payloadBytes: Int64,
+    availableBytesAfterPayloadCopy: Int64?
+  ) -> Bool {
+    guard currentBatchBytes >= 0, payloadBytes > 0 else { return false }
+    guard payloadBytes <= maxBatchBytes - currentBatchBytes else { return false }
+    guard let availableBytesAfterPayloadCopy, availableBytesAfterPayloadCopy >= 0 else {
+      return false
+    }
+    let proposedBatchBytes = currentBatchBytes + payloadBytes
+    return availableBytesAfterPayloadCopy
+      >= proposedBatchBytes + minimumFreeBytesAfterNativeImport
+  }
+
+  static func resolvedAvailableCapacity(
+    importantUsage: Int64?,
+    general: Int?
+  ) -> Int64? {
+    importantUsage ?? general.map(Int64.init)
+  }
 
   /// Called after at least one image was accepted into the pending queue.
   var onPendingChanged: (() -> Void)?
@@ -27,7 +72,7 @@ final class CapturePickerPresenter: NSObject {
     super.init()
   }
 
-  func present(completion: @escaping (Result<Bool, PickerError>) -> Void) {
+  func present(completion: @escaping (Result<CapturePickerImportResult, PickerError>) -> Void) {
     guard !isPresenting else {
       completion(.failure(.alreadyPresenting))
       return
@@ -39,9 +84,7 @@ final class CapturePickerPresenter: NSObject {
 
     var configuration = PHPickerConfiguration()
     configuration.filter = .images
-    // Android's picker is single-select, and the analyzer still handles one image
-    // at a time. Keep the platforms aligned rather than silently dropping extras.
-    configuration.selectionLimit = 1
+    configuration.selectionLimit = Self.maxSelectionCount
 
     let picker = PHPickerViewController(configuration: configuration)
     let delegate = PickerDelegate(presenter: self, completion: completion)
@@ -61,96 +104,42 @@ final class CapturePickerPresenter: NSObject {
     }
   }
 
-  /// Copies the picked items into a staging directory, ingests them, and records the
-  /// payload. Returns true when something was accepted.
-  fileprivate func ingest(results: [PHPickerResult], completion: @escaping (Bool) -> Void) {
+  /// Loads and validates one provider at a time, then atomically records every
+  /// accepted one-image payload when the batch is complete.
+  fileprivate func ingest(
+    results: [PHPickerResult],
+    completion: @escaping (CapturePickerImportResult) -> Void
+  ) {
     guard !results.isEmpty else {
-      completion(false)
+      completion(.cancelled)
       return
     }
-
-    let stagingDirectory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("incoming_share_staging", isDirectory: true)
-      .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    do {
-      try FileManager.default.createDirectory(
-        at: stagingDirectory,
-        withIntermediateDirectories: true
-      )
-    } catch {
-      completion(false)
-      return
-    }
-
-    let group = DispatchGroup()
-    let stagedLock = NSLock()
-    var stagedURLs: [URL] = []
-    var stagingFailed = false
-
-    for result in results {
-      let provider = result.itemProvider
-      guard provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) else {
-        stagingFailed = true
-        continue
-      }
-      group.enter()
-      provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { url, _ in
-        defer { group.leave() }
-        guard let url else {
-          stagedLock.lock()
-          stagingFailed = true
-          stagedLock.unlock()
-          return
-        }
-        // The URL is only valid inside this callback, so copy before returning.
-        let destination = stagingDirectory.appendingPathComponent(
-          "\(UUID().uuidString).\(url.pathExtension.isEmpty ? "img" : url.pathExtension)"
+    guard results.count <= Self.maxSelectionCount else {
+      completion(
+        CapturePickerImportResult(
+          selectedCount: results.count,
+          importedCount: 0,
+          rejectedCount: results.count
         )
-        do {
-          try FileManager.default.copyItem(at: url, to: destination)
-          stagedLock.lock()
-          stagedURLs.append(destination)
-          stagedLock.unlock()
-        } catch {
-          stagedLock.lock()
-          stagingFailed = true
-          stagedLock.unlock()
-        }
-      }
+      )
+      return
     }
-
-    group.notify(queue: .global(qos: .userInitiated)) { [weak self] in
-      defer { try? FileManager.default.removeItem(at: stagingDirectory) }
-
-      guard !stagingFailed, !stagedURLs.isEmpty else {
-        completion(false)
-        return
-      }
-      guard let payload = IncomingShareIngestor.shared.ingest(
-        sourceURLs: stagedURLs,
-        declaredMimeType: nil,
-        sourcePackage: nil
-      ) else {
-        completion(false)
-        return
-      }
-      guard IncomingShareStore.shared.append(payload) else {
-        IncomingShareIngestor.shared.deleteAttachments(payload.attachments)
-        completion(false)
-        return
-      }
-      self?.onPendingChanged?()
-      completion(true)
-    }
+    PickerBatchImportOperation(
+      results: results,
+      onPendingChanged: { [weak self] in self?.onPendingChanged?() },
+      completion: completion
+    ).start()
   }
 
   private static func topViewController() -> UIViewController? {
-    let scene = UIApplication.shared.connectedScenes
+    let scene =
+      UIApplication.shared.connectedScenes
       .compactMap { $0 as? UIWindowScene }
       .first { $0.activationState == .foregroundActive }
       ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
-    guard var top = scene?.windows.first(where: \.isKeyWindow)?.rootViewController
-      ?? scene?.windows.first?.rootViewController
+    guard
+      var top = scene?.windows.first(where: \.isKeyWindow)?.rootViewController
+        ?? scene?.windows.first?.rootViewController
     else {
       return nil
     }
@@ -168,11 +157,15 @@ final class CapturePickerPresenter: NSObject {
 
 private final class PickerDelegate: NSObject, PHPickerViewControllerDelegate {
   private weak var presenter: CapturePickerPresenter?
-  private let completion: (Result<Bool, CapturePickerPresenter.PickerError>) -> Void
+  private let completion:
+    (Result<CapturePickerImportResult, CapturePickerPresenter.PickerError>) -> Void
 
   init(
     presenter: CapturePickerPresenter,
-    completion: @escaping (Result<Bool, CapturePickerPresenter.PickerError>) -> Void
+    completion:
+      @escaping (
+        Result<CapturePickerImportResult, CapturePickerPresenter.PickerError>
+      ) -> Void
   ) {
     self.presenter = presenter
     self.completion = completion
@@ -180,16 +173,175 @@ private final class PickerDelegate: NSObject, PHPickerViewControllerDelegate {
 
   func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
     picker.dismiss(animated: true)
-    presenter?.finishPresenting()
 
     guard let presenter else {
-      completion(.success(false))
+      completion(.success(.cancelled))
       return
     }
-    presenter.ingest(results: results) { [completion] accepted in
+    presenter.ingest(results: results) { [presenter, completion] importResult in
       DispatchQueue.main.async {
-        completion(.success(accepted))
+        presenter.finishPresenting()
+        completion(.success(importResult))
       }
     }
+  }
+}
+
+/// Owns one picker import so provider loading, validation and private-storage
+/// copies stay sequential. At most one provider representation is live at once.
+private final class PickerBatchImportOperation {
+  private let results: [PHPickerResult]
+  private let onPendingChanged: () -> Void
+  private let completion: (CapturePickerImportResult) -> Void
+  private let fileManager = FileManager.default
+  private let queue = DispatchQueue(
+    label: "com.orialthq.ori_beauty.capture-picker-import",
+    qos: .userInitiated
+  )
+  private let stagingDirectory: URL
+
+  private var nextIndex = 0
+  private var payloads: [IncomingSharePayload] = []
+  private var batchBytes: Int64 = 0
+
+  init(
+    results: [PHPickerResult],
+    onPendingChanged: @escaping () -> Void,
+    completion: @escaping (CapturePickerImportResult) -> Void
+  ) {
+    self.results = results
+    self.onPendingChanged = onPendingChanged
+    self.completion = completion
+    stagingDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("incoming_share_staging", isDirectory: true)
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+  }
+
+  func start() {
+    queue.async { [self] in
+      do {
+        try fileManager.createDirectory(
+          at: stagingDirectory,
+          withIntermediateDirectories: true
+        )
+        loadNextProvider()
+      } catch {
+        completeWithoutImport()
+      }
+    }
+  }
+
+  private func loadNextProvider() {
+    guard nextIndex < results.count else {
+      commitBatch()
+      return
+    }
+
+    let provider = results[nextIndex].itemProvider
+    nextIndex += 1
+    guard provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) else {
+      loadNextProvider()
+      return
+    }
+
+    provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) {
+      [self] sourceURL, _ in
+      // The provider URL expires when this callback returns, so stage it here.
+      guard let sourceURL else {
+        queue.async { [self] in loadNextProvider() }
+        return
+      }
+      let pathExtension = sourceURL.pathExtension.isEmpty ? "img" : sourceURL.pathExtension
+      let stagedURL = stagingDirectory.appendingPathComponent(
+        "\(UUID().uuidString).\(pathExtension)"
+      )
+      do {
+        try fileManager.copyItem(at: sourceURL, to: stagedURL)
+        queue.async { [self] in ingest(stagedURL: stagedURL) }
+      } catch {
+        queue.async { [self] in loadNextProvider() }
+      }
+    }
+  }
+
+  private func ingest(stagedURL: URL) {
+    defer {
+      try? fileManager.removeItem(at: stagedURL)
+      loadNextProvider()
+    }
+    guard
+      let payload = IncomingShareIngestor.shared.ingest(
+        sourceURLs: [stagedURL],
+        declaredMimeType: nil,
+        sourcePackage: nil
+      )
+    else {
+      return
+    }
+    let payloadBytes = payload.attachments.reduce(Int64(0)) { partial, attachment in
+      partial + attachment.byteSize
+    }
+    guard
+      CapturePickerPresenter.canAccept(
+        currentBatchBytes: batchBytes,
+        payloadBytes: payloadBytes,
+        availableBytesAfterPayloadCopy: availableCapacity()
+      )
+    else {
+      IncomingShareIngestor.shared.deleteAttachments(payload.attachments)
+      return
+    }
+    payloads.append(payload)
+    batchBytes += payloadBytes
+  }
+
+  private func availableCapacity() -> Int64? {
+    do {
+      let values = try stagingDirectory.resourceValues(forKeys: [
+        .volumeAvailableCapacityForImportantUsageKey,
+        .volumeAvailableCapacityKey,
+      ])
+      return CapturePickerPresenter.resolvedAvailableCapacity(
+        importantUsage: values.volumeAvailableCapacityForImportantUsage,
+        general: values.volumeAvailableCapacity
+      )
+    } catch {
+      // Capacity is a safety boundary: an unknown value must reject this image
+      // instead of being treated as effectively unlimited storage.
+      return nil
+    }
+  }
+
+  private func commitBatch() {
+    defer { try? fileManager.removeItem(at: stagingDirectory) }
+
+    let committed = !payloads.isEmpty && IncomingShareStore.shared.appendAll(payloads)
+    if !committed {
+      payloads.forEach { payload in
+        IncomingShareIngestor.shared.deleteAttachments(payload.attachments)
+      }
+    }
+    let importedCount = committed ? payloads.count : 0
+    if importedCount > 0 {
+      onPendingChanged()
+    }
+    completion(
+      CapturePickerImportResult(
+        selectedCount: results.count,
+        importedCount: importedCount,
+        rejectedCount: results.count - importedCount
+      )
+    )
+  }
+
+  private func completeWithoutImport() {
+    try? fileManager.removeItem(at: stagingDirectory)
+    completion(
+      CapturePickerImportResult(
+        selectedCount: results.count,
+        importedCount: 0,
+        rejectedCount: results.count
+      )
+    )
   }
 }

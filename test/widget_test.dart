@@ -315,7 +315,7 @@ void main() {
       await tester.tap(find.byTooltip('콘텐츠 추가'));
       await tester.pumpAndSettle();
 
-      final picker = find.widgetWithText(OutlinedButton, '스크린샷 가져오기');
+      final picker = find.widgetWithText(OutlinedButton, '갤러리에서 사진 여러 장 가져오기');
       final tipImport = find.widgetWithText(OutlinedButton, '받은 팁 파일 가져오기');
       expect(picker, findsOneWidget);
       expect(tipImport, findsOneWidget);
@@ -352,7 +352,9 @@ void main() {
       await tester.tap(find.byTooltip('콘텐츠 추가'));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.widgetWithText(OutlinedButton, '스크린샷 가져오기'));
+      await tester.tap(
+        find.widgetWithText(OutlinedButton, '갤러리에서 사진 여러 장 가져오기'),
+      );
       await tester.pumpAndSettle();
 
       expect(service.presentCapturePickerCount, 1);
@@ -555,6 +557,96 @@ void main() {
     final compactSummary = find.text('저장한 내용의 세부 정보를 확인해 주세요.');
     expect(compactSummary, findsOneWidget);
     expect(tester.widget<Text>(compactSummary).maxLines, 2);
+  });
+
+  testWidgets('a multi-photo import is announced once and opens the list', (
+    tester,
+  ) async {
+    final service = InMemoryIncomingShareService();
+    final controller = AppController(service);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(OriBeautyApp(controller: controller));
+    await controller.initialize();
+    await tester.pumpAndSettle();
+
+    service
+      ..add(
+        IncomingShare(
+          id: 'picker-ui-first',
+          receivedAt: DateTime(2026, 9, 6),
+          sharedText: '첫 번째 갤러리 사진',
+          discoveredUrl: null,
+        ),
+      )
+      ..add(
+        IncomingShare(
+          id: 'picker-ui-second',
+          receivedAt: DateTime(2026, 9, 6),
+          sharedText: '두 번째 갤러리 사진',
+          discoveredUrl: null,
+        ),
+      );
+    await tester.pumpAndSettle();
+
+    expect(find.text('콘텐츠 2개를 가져왔어요'), findsOneWidget);
+    expect(find.byKey(const Key('incoming-capture-dismiss')), findsOneWidget);
+    expect(
+      controller.captures.map((capture) => capture.raw.transportEventId),
+      containsAll(['picker-ui-first', 'picker-ui-second']),
+    );
+
+    await tester.tap(find.text('콘텐츠 2개를 가져왔어요'));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(AppBar, '콘텐츠'), findsOneWidget);
+    expect(find.byKey(const Key('incoming-capture-dismiss')), findsNothing);
+  });
+
+  testWidgets('a coalesced import keeps each external source choice', (
+    tester,
+  ) async {
+    final service = InMemoryIncomingShareService();
+    final controller = AppController(service);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(OriBeautyApp(controller: controller));
+    await controller.initialize();
+    await tester.pumpAndSettle();
+
+    service
+      ..add(
+        IncomingShare(
+          id: 'external-source-first',
+          receivedAt: DateTime(2026, 9, 6),
+          sharedText: '첫 번째 외부 공유',
+          discoveredUrl: null,
+          sourceDeletionAvailable: true,
+        ),
+      )
+      ..add(
+        IncomingShare(
+          id: 'external-source-second',
+          receivedAt: DateTime(2026, 9, 6),
+          sharedText: '두 번째 외부 공유',
+          discoveredUrl: null,
+          sourceDeletionAvailable: true,
+        ),
+      );
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(FilledButton, '갤러리에 두기'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, '갤러리에 두기'));
+    await tester.pumpAndSettle();
+
+    // The second source still gets its own decision even though the home
+    // banner and route reset were coalesced into one batch announcement.
+    expect(find.widgetWithText(FilledButton, '갤러리에 두기'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, '갤러리에 두기'));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(FilledButton, '갤러리에 두기'), findsNothing);
+    expect(find.text('콘텐츠 2개를 가져왔어요'), findsOneWidget);
   });
 
   testWidgets('gallery source choice clears the Android system inset', (

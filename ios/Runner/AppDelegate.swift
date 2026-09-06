@@ -80,8 +80,8 @@ import UserNotifications
       case "presentCapturePicker":
         CapturePickerPresenter.shared.present { outcome in
           switch outcome {
-          case .success(let accepted):
-            result(accepted)
+          case .success(let importResult):
+            result(importResult.platformMap)
           case .failure(let error):
             result(
               FlutterError(
@@ -143,8 +143,17 @@ import UserNotifications
       case "acknowledgeShares":
         let arguments = call.arguments as? [String: Any]
         let ids = arguments?["ids"] as? [String] ?? []
-        IncomingShareStore.shared.acknowledge(ids: ids)
-        result(nil)
+        if IncomingShareStore.shared.acknowledge(ids: ids) {
+          result(nil)
+        } else {
+          result(
+            FlutterError(
+              code: "share_acknowledge_failed",
+              message: "Pending shares could not be committed to durable storage.",
+              details: nil
+            )
+          )
+        }
       case "keepSharedSource":
         result(nil)
       case "deleteSharedSource":
@@ -248,7 +257,8 @@ import UserNotifications
     let name = (values?["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
     let address =
       (values?["address"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let query = explicitQuery?.isEmpty == false
+    let query =
+      explicitQuery?.isEmpty == false
       ? explicitQuery!
       : [name, address]
         .compactMap { $0 }

@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../data/app_snapshot_store.dart';
 import '../data/content_analysis_service.dart';
 import '../data/demo_catalog.dart';
+import '../data/development_backup_service.dart';
 import '../data/incoming_share_service.dart';
 import '../data/portable_tip_importer.dart';
 import '../data/portable_tip_service.dart';
@@ -19,6 +20,26 @@ import '../domain/models.dart';
 import '../domain/tag_key.dart';
 import '../domain/portable_tip_package.dart';
 
+/// One durable incoming-share import transaction.
+///
+/// A gallery picker can place up to 100 one-image shares in the native inbox
+/// at once. The captures still remain independent for storage and analysis,
+/// but the UI should react to that transaction once instead of navigating once
+/// per image.
+@immutable
+final class IncomingCaptureBatch {
+  IncomingCaptureBatch(Iterable<String> captureIds)
+    : captureIds = List<String>.unmodifiable(captureIds) {
+    assert(this.captureIds.isNotEmpty);
+  }
+
+  final List<String> captureIds;
+
+  /// Matches the capture that the previous per-image event loop ultimately
+  /// left visible after processing every event in insertion order.
+  String get primaryCaptureId => captureIds.last;
+}
+
 final class AppController extends ChangeNotifier {
   AppController(
     this._incomingShareService, [
@@ -28,9 +49,12 @@ final class AppController extends ChangeNotifier {
     this._placeEnrichmentService = const NoPlaceEnrichmentService(),
     this._tagMergeService = const NoTagMergeService(),
     this._tagSenseService = const NoTagSenseService(),
+    DevelopmentBackupService? developmentBackupService,
   ]) : _captures = [...DemoCatalog.captures],
        _groups = [...DemoCatalog.groups],
-       _snapshotStore = snapshotStore ?? InMemoryAppSnapshotStore();
+       _snapshotStore = snapshotStore ?? InMemoryAppSnapshotStore(),
+       _developmentBackupService =
+           developmentBackupService ?? const DevelopmentBackupService();
 
   final IncomingShareService _incomingShareService;
   final ContentAnalysisService _contentAnalysisService;
@@ -39,6 +63,7 @@ final class AppController extends ChangeNotifier {
   final PlaceEnrichmentService _placeEnrichmentService;
   final TagMergeService _tagMergeService;
   final TagSenseService _tagSenseService;
+  final DevelopmentBackupService _developmentBackupService;
 
   /// The sense dictionary: [tagKey] to the words that lead to that tag, the
   /// thing "매운거" is matched against. Filled in the background, one ask per
@@ -56,8 +81,8 @@ final class AppController extends ChangeNotifier {
   final Set<String> _attemptedPlaceEnrichment = {};
   final Set<String> _sourceDeletionAvailableCaptureIds = {};
   final Map<String, _PendingPortableTip> _pendingPortableTips = {};
-  final StreamController<String> _incomingCaptureController =
-      StreamController<String>.broadcast();
+  final StreamController<IncomingCaptureBatch> _incomingCaptureController =
+      StreamController<IncomingCaptureBatch>.broadcast();
   final StreamController<String> _portableTipController =
       StreamController<String>.broadcast();
 
@@ -65,14 +90,17 @@ final class AppController extends ChangeNotifier {
   StreamSubscription<void>? _portableTipSubscription;
   Future<void> _snapshotWriteTail = Future<void>.value();
   Future<void> _incomingDrainTail = Future<void>.value();
+  Future<void> _analysisTail = Future<void>.value();
   Future<void> _portableTipDrainTail = Future<void>.value();
+  final Set<String> _queuedAnalysisIds = {};
   CaptureFilter _filter = CaptureFilter.all;
   Future<void>? _initialization;
 
   List<CaptureRecord> get captures => List.unmodifiable(_captures);
   List<ProductGroup> get groups => List.unmodifiable(_groups);
   CaptureFilter get filter => _filter;
-  Stream<String> get incomingCaptureAdded => _incomingCaptureController.stream;
+  Stream<IncomingCaptureBatch> get incomingCaptureAdded =>
+      _incomingCaptureController.stream;
   Stream<String> get portableTipReceived => _portableTipController.stream;
 
   PortableTipPackage? pendingPortableTip(String transportId) =>
@@ -238,6 +266,151 @@ final class AppController extends ChangeNotifier {
     return true;
   }
 
+  int get userCaptureCount => _captures
+      .where((capture) => capture.raw.origin != CaptureOrigin.demo)
+      .length;
+
+  /// Makes a portable development backup of reader-imported content only.
+  ///
+  /// Demo samples are intentionally omitted. The manifest is the exact same
+  /// logical snapshot the app persists, while the backup service replaces
+  /// device-local image paths with paths inside the ZIP before sharing it.
+  Future<File> shareDevelopmentBackup() {
+    final captures = _captures
+        .where((capture) => capture.raw.origin != CaptureOrigin.demo)
+        .toList(growable: false);
+    final persisted = [
+      for (final capture in captures)
+        PersistedCapture.fromRecord(
+          capture,
+          capture.groupId == null ? null : groupById(capture.groupId!),
+        ),
+    ];
+    final tagKeys = <String>{
+      for (final capture in captures)
+        for (final tag in capture.contentTags) tag.key,
+    };
+    final senses = <String, List<String>>{
+      for (final entry in _tagSenses.entries)
+        if (tagKeys.contains(entry.key)) entry.key: entry.value,
+    };
+    return _developmentBackupService.createAndShare(
+      captures: persisted,
+      tagSenses: senses,
+    );
+  }
+
+  /// Deletes reader-imported content while preserving demo samples, plans and
+  /// every source image still in the device gallery.
+  ///
+  /// State is first reduced in memory and then durably saved. Any save failure
+  /// rolls every affected collection back before listeners can observe it.
+  /// Private retained image copies are removed only after that durable save.
+  Future<bool> clearAllUserCaptures() {
+    final operation = _incomingDrainTail.then(
+      (_) => _clearAllUserCapturesOnce(),
+    );
+    // A pending-share event arriving while deletion is running chains its
+    // drain after this operation. This prevents a partially retained picker
+    // batch from reappearing immediately after "전체 삭제" completes.
+    _incomingDrainTail = operation.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) {
+        debugPrint('Development data reset failed: $error\n$stackTrace');
+      },
+    );
+    return operation;
+  }
+
+  Future<bool> _clearAllUserCapturesOnce() async {
+    final deletedCaptures = _captures
+        .where((capture) => capture.raw.origin != CaptureOrigin.demo)
+        .toList(growable: false);
+    if (deletedCaptures.isEmpty) return true;
+
+    // A previously failed native acknowledge can leave an envelope behind
+    // even though its Dart capture is already durable and analyzed. Remove
+    // those envelopes before deleting the durable library state; otherwise a
+    // restart could import a just-cleared photo again.
+    try {
+      await _incomingShareService.acknowledge(
+        deletedCaptures.map((capture) => capture.raw.transportEventId),
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'Development data reset could not clear native envelopes: '
+        '$error\n$stackTrace',
+      );
+      return false;
+    }
+
+    final deletedIds = deletedCaptures.map((capture) => capture.raw.id).toSet();
+    final previousCaptures = List<CaptureRecord>.of(_captures);
+    final previousGroups = List<ProductGroup>.of(_groups);
+    final previousTagSenses = Map<String, List<String>>.of(_tagSenses);
+    final previousSourceDeletionIds = Set<String>.of(
+      _sourceDeletionAvailableCaptureIds,
+    );
+    final previousAttemptedEnrichmentIds = Set<String>.of(
+      _attemptedPlaceEnrichment,
+    );
+    final previousDurablySavedIds = Set<String>.of(_durablySavedTransportIds);
+    final previousFilter = _filter;
+
+    _captures.removeWhere((capture) => deletedIds.contains(capture.raw.id));
+    for (final captureId in deletedIds) {
+      _removeCaptureFromGroups(captureId);
+    }
+    _sourceDeletionAvailableCaptureIds.removeAll(deletedIds);
+    _attemptedPlaceEnrichment.removeAll(deletedIds);
+    _filter = CaptureFilter.all;
+    final remainingSenses = _prunedTagSenses();
+    _tagSenses
+      ..clear()
+      ..addAll(remainingSenses);
+
+    final saved = await _persistState();
+    if (!saved) {
+      _captures
+        ..clear()
+        ..addAll(previousCaptures);
+      _groups
+        ..clear()
+        ..addAll(previousGroups);
+      _tagSenses
+        ..clear()
+        ..addAll(previousTagSenses);
+      _sourceDeletionAvailableCaptureIds
+        ..clear()
+        ..addAll(previousSourceDeletionIds);
+      _attemptedPlaceEnrichment
+        ..clear()
+        ..addAll(previousAttemptedEnrichmentIds);
+      _durablySavedTransportIds
+        ..clear()
+        ..addAll(previousDurablySavedIds);
+      _filter = previousFilter;
+      return false;
+    }
+
+    notifyListeners();
+    for (final capture in deletedCaptures) {
+      if (previousSourceDeletionIds.contains(capture.raw.id)) {
+        try {
+          // Resolve the native choice as "keep". This cleanup must never
+          // delete the gallery original during a development data reset.
+          await _incomingShareService.keepSharedSource(
+            capture.raw.transportEventId,
+          );
+        } catch (error, stackTrace) {
+          debugPrint('Shared source keep failed: $error\n$stackTrace');
+        }
+      }
+      await _deleteUnreferencedManagedAttachments(capture);
+    }
+    return true;
+  }
+
   bool canDeleteSharedSource(String captureId) =>
       _sourceDeletionAvailableCaptureIds.contains(captureId);
 
@@ -376,9 +549,20 @@ final class AppController extends ChangeNotifier {
         // A failed call is not an answer. Whatever changes the library next
         // retries; spinning here would hammer a server that just said no.
         if (found.isEmpty) return;
-        _tagSenses.addAll(found);
-        notifyListeners();
-        await _persistState();
+        // The library may have been reset while the request was in flight.
+        // Never let the late answer put deleted-only words back in memory.
+        final currentKeys = {
+          for (final entry in tagVocabulary) tagKey(entry.value),
+        };
+        final relevantFound = <String, List<String>>{
+          for (final entry in found.entries)
+            if (currentKeys.contains(entry.key)) entry.key: entry.value,
+        };
+        if (relevantFound.isNotEmpty) {
+          _tagSenses.addAll(relevantFound);
+          notifyListeners();
+          await _persistState();
+        }
       } while (_tagSensesQueued);
     } finally {
       _tagSensesInFlight = false;
@@ -618,6 +802,7 @@ final class AppController extends ChangeNotifier {
       final pendingAnalysisIds = <String>[];
       final importedCaptureIds = <String>[];
       final sourceDeletionCandidateIds = <String>[];
+      final previousFilter = _filter;
       var changed = false;
       for (final share in shares) {
         if (knownTransportIds.contains(share.id)) {
@@ -626,10 +811,23 @@ final class AppController extends ChangeNotifier {
           }
           continue;
         }
-        var capture = share.attachments.isEmpty
-            ? _contentAnalysisService.analyzeShare(share)
-            : _contentAnalysisService.prepareShare(share);
-        capture = await _retainAttachments(capture);
+        CaptureRecord capture;
+        try {
+          capture = share.attachments.isEmpty
+              ? _contentAnalysisService.analyzeShare(share)
+              : _contentAnalysisService.prepareShare(share);
+          capture = await _retainAttachments(capture);
+        } catch (error, stackTrace) {
+          // One unreadable item in a large picker batch must not prevent the
+          // other selected photos from being imported. Leave this native item
+          // pending so a later drain can retry it or a newer build can recover
+          // it.
+          debugPrint(
+            'Incoming share ${share.id} could not be prepared: '
+            '$error\n$stackTrace',
+          );
+          continue;
+        }
         _captures.insert(0, capture);
         importedCaptureIds.add(capture.raw.id);
         if (share.sourceDeletionAvailable) {
@@ -641,10 +839,12 @@ final class AppController extends ChangeNotifier {
         knownTransportIds.add(share.id);
         changed = true;
       }
+      var importedBatchWasSaved = false;
       if (changed) {
         _filter = CaptureFilter.all;
         final saved = await _persistState();
         if (saved) {
+          importedBatchWasSaved = true;
           _sourceDeletionAvailableCaptureIds.addAll(sourceDeletionCandidateIds);
           safeToAcknowledge.addAll(
             shares
@@ -652,28 +852,76 @@ final class AppController extends ChangeNotifier {
                 .map((share) => share.id),
           );
         } else {
-          for (final captureId in sourceDeletionCandidateIds) {
-            final capture = captureById(captureId);
-            if (capture != null) {
-              await _incomingShareService.keepSharedSource(
-                capture.raw.transportEventId,
+          final importedIds = importedCaptureIds.toSet();
+          final unsavedCaptures = _captures
+              .where((capture) => importedIds.contains(capture.raw.id))
+              .toList(growable: false);
+          _captures.removeWhere(
+            (capture) => importedIds.contains(capture.raw.id),
+          );
+          _filter = previousFilter;
+          for (final capture in unsavedCaptures) {
+            if (sourceDeletionCandidateIds.contains(capture.raw.id)) {
+              try {
+                await _incomingShareService.keepSharedSource(
+                  capture.raw.transportEventId,
+                );
+              } catch (error, stackTrace) {
+                debugPrint('Shared source keep failed: $error\n$stackTrace');
+              }
+            }
+            try {
+              await _deleteUnreferencedManagedAttachments(capture);
+            } catch (error, stackTrace) {
+              debugPrint(
+                'Unsaved retained attachment cleanup failed: '
+                '$error\n$stackTrace',
               );
             }
           }
         }
-        notifyListeners();
-        for (final captureId in importedCaptureIds) {
-          _incomingCaptureController.add(captureId);
+        if (importedBatchWasSaved) {
+          notifyListeners();
+          _incomingCaptureController.add(
+            IncomingCaptureBatch(importedCaptureIds),
+          );
         }
       }
       if (safeToAcknowledge.isNotEmpty) {
-        await _incomingShareService.acknowledge(safeToAcknowledge);
+        try {
+          await _incomingShareService.acknowledge(safeToAcknowledge);
+        } catch (error, stackTrace) {
+          // The snapshot is already durable. Keep analysis moving and leave
+          // the native envelope for a later idempotent acknowledge attempt.
+          debugPrint('Incoming share acknowledge failed: $error\n$stackTrace');
+        }
       }
-      for (final captureId in pendingAnalysisIds) {
-        await _analyzeCapture(captureId);
+      if (importedBatchWasSaved) {
+        _queueCaptureAnalysis(pendingAnalysisIds);
       }
     } catch (error, stackTrace) {
       debugPrint('Incoming share drain failed: $error\n$stackTrace');
+    }
+  }
+
+  /// Runs remote image analysis one at a time without holding the incoming
+  /// share drain lock. A 100-photo batch is persisted and acknowledged first,
+  /// so another picker/share can be accepted while this queue keeps working.
+  void _queueCaptureAnalysis(Iterable<String> captureIds) {
+    for (final captureId in captureIds) {
+      if (!_queuedAnalysisIds.add(captureId)) continue;
+      _analysisTail = _analysisTail.then((_) async {
+        try {
+          await _analyzeCapture(captureId);
+        } catch (error, stackTrace) {
+          debugPrint(
+            'Queued content analysis failed unexpectedly: '
+            '$error\n$stackTrace',
+          );
+        } finally {
+          _queuedAnalysisIds.remove(captureId);
+        }
+      });
     }
   }
 
@@ -1335,7 +1583,7 @@ final class AppController extends ChangeNotifier {
     unawaited(_topUpTagSenses());
   }
 
-  Future<bool> presentCapturePicker() {
+  Future<CapturePickerResult> presentCapturePicker() {
     return _incomingShareService.presentCapturePicker();
   }
 
@@ -1377,7 +1625,7 @@ final class AppController extends ChangeNotifier {
     unawaited(_persistState());
     notifyListeners();
     if (reanalyzed.status == CaptureStatus.analyzing) {
-      unawaited(_analyzeCapture(reanalyzed.raw.id));
+      _queueCaptureAnalysis([reanalyzed.raw.id]);
     }
   }
 
@@ -1465,9 +1713,7 @@ final class AppController extends ChangeNotifier {
           notifyListeners();
         }
       }
-      for (final captureId in pendingAnalysisIds) {
-        await _analyzeCapture(captureId);
-      }
+      _queueCaptureAnalysis(pendingAnalysisIds);
     } catch (error, stackTrace) {
       debugPrint('App snapshot restore failed: $error\n$stackTrace');
     }

@@ -51,13 +51,14 @@ final class _HomeShellState extends State<HomeShell>
 
   var _tab = _HomeTab.home;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
-  String? _incomingCaptureId;
+  IncomingCaptureBatch? _incomingCaptureBatch;
   var _exitArmed = false;
   var _canReturnToSourceApp = false;
   var _returningToSourceApp = false;
   var _planOpenInFlight = false;
+  var _developmentDataActionInFlight = false;
   Timer? _exitConfirmationTimer;
-  late StreamSubscription<String> _incomingCaptureSubscription;
+  late StreamSubscription<IncomingCaptureBatch> _incomingCaptureSubscription;
   late StreamSubscription<String> _portableTipSubscription;
   late StreamSubscription<String> _placeReminderOpenSubscription;
   late final PlaceReminderOpenInbox _placeReminderOpenInbox;
@@ -310,7 +311,7 @@ final class _HomeShellState extends State<HomeShell>
 
   void _listenForIncomingCaptures() {
     _incomingCaptureSubscription = widget.controller.incomingCaptureAdded
-        .listen((captureId) {
+        .listen((batch) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) {
               return;
@@ -319,17 +320,22 @@ final class _HomeShellState extends State<HomeShell>
               // 콘텐츠 is no longer a tab. Home is where a just-arrived
               // capture is announced, and its top action opens the list.
               _tab = _HomeTab.home;
-              _incomingCaptureId = captureId;
+              _incomingCaptureBatch = batch;
               _exitArmed = false;
               _canReturnToSourceApp = true;
               _returningToSourceApp = false;
             });
             _exitConfirmationTimer?.cancel();
             Navigator.of(context).popUntil((route) => route.isFirst);
-            if (widget.controller.canDeleteSharedSource(captureId)) {
-              _sourceChoiceTail = _sourceChoiceTail.then(
-                (_) => _showSourceChoice(captureId),
-              );
+            // External image shares can each own a deletable gallery source.
+            // Keep those decisions item-by-item even though navigation and the
+            // arrival banner are deliberately coalesced for this transaction.
+            for (final captureId in batch.captureIds) {
+              if (widget.controller.canDeleteSharedSource(captureId)) {
+                _sourceChoiceTail = _sourceChoiceTail.then(
+                  (_) => _showSourceChoice(captureId),
+                );
+              }
             }
           });
         });
@@ -368,6 +374,71 @@ final class _HomeShellState extends State<HomeShell>
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _shareDevelopmentBackup() async {
+    if (_developmentDataActionInFlight) return;
+    _developmentDataActionInFlight = true;
+    try {
+      _showMessage('백업 ZIP을 준비하고 있어요.');
+      await widget.controller.shareDevelopmentBackup();
+    } catch (error, stackTrace) {
+      debugPrint('Development backup failed: $error\n$stackTrace');
+      if (mounted) _showMessage('백업 파일을 만들지 못했어요. 다시 시도해 주세요.');
+    } finally {
+      _developmentDataActionInFlight = false;
+    }
+  }
+
+  Future<void> _confirmAndClearUserCaptures() async {
+    if (_developmentDataActionInFlight) return;
+    final count = widget.controller.userCaptureCount;
+    if (count == 0) {
+      _showMessage('삭제할 가져온 콘텐츠가 없어요.');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        surfaceTintColor: Colors.transparent,
+        title: const Text('가져온 콘텐츠를 모두 삭제할까요?'),
+        content: Text(
+          '데모를 제외한 콘텐츠 $count개와 Trun On이 보관한 이미지 사본이 '
+          '삭제돼요. 갤러리 원본과 계획함의 계획은 그대로 남아요. '
+          '되돌릴 수 없으니 필요하면 먼저 백업 ZIP을 '
+          '내보내 주세요. 현재 앱에서는 ZIP을 바로 복원하는 '
+          '기능은 제공하지 않아요.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('취소'),
+          ),
+          TextButton(
+            key: const Key('confirm-clear-user-captures'),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: TextButton.styleFrom(foregroundColor: AppTheme.planNegative),
+            child: const Text('전체 삭제'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    _developmentDataActionInFlight = true;
+    try {
+      final cleared = await widget.controller.clearAllUserCaptures();
+      if (!mounted) return;
+      if (!cleared) {
+        _showMessage('정리하지 못해 콘텐츠나 원본을 건드리지 않았어요.');
+        return;
+      }
+      setState(() => _incomingCaptureBatch = null);
+      _showMessage('가져온 콘텐츠 $count개를 삭제했어요. 계획은 그대로예요.');
+    } finally {
+      _developmentDataActionInFlight = false;
+    }
   }
 
   bool get _handlesSystemBack =>
@@ -546,6 +617,8 @@ final class _HomeShellState extends State<HomeShell>
             onSelect: _selectTab,
             onOpenContents: _openContentList,
             onOpenPast: planController == null ? null : _openPastPlans,
+            onBackupContents: _shareDevelopmentBackup,
+            onClearContents: _confirmAndClearUserCaptures,
           ),
           body: Stack(
             children: [
@@ -572,19 +645,24 @@ final class _HomeShellState extends State<HomeShell>
                         child: child,
                       ),
                     ),
-                    child: _incomingCaptureId == null
+                    child: _incomingCaptureBatch == null
                         ? const SizedBox.shrink()
                         : Padding(
-                            key: ValueKey(_incomingCaptureId),
+                            key: ValueKey(
+                              _incomingCaptureBatch!.primaryCaptureId,
+                            ),
                             padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
                             child: _IncomingCaptureCard(
                               controller: widget.controller,
-                              captureId: _incomingCaptureId!,
+                              captureId:
+                                  _incomingCaptureBatch!.primaryCaptureId,
+                              captureCount:
+                                  _incomingCaptureBatch!.captureIds.length,
                               onDismiss: () {
-                                setState(() => _incomingCaptureId = null);
+                                setState(() => _incomingCaptureBatch = null);
                               },
                               onOpen: () =>
-                                  _openIncomingCapture(_incomingCaptureId!),
+                                  _openIncomingCaptures(_incomingCaptureBatch!),
                             ),
                           ),
                   ),
@@ -1109,10 +1187,16 @@ final class _HomeShellState extends State<HomeShell>
     );
   }
 
-  void _openIncomingCapture(String captureId) {
+  void _openIncomingCaptures(IncomingCaptureBatch batch) {
+    if (batch.captureIds.length > 1) {
+      setState(() => _incomingCaptureBatch = null);
+      _openContentList();
+      return;
+    }
+    final captureId = batch.primaryCaptureId;
     final capture = widget.controller.captureById(captureId);
     if (capture == null) {
-      setState(() => _incomingCaptureId = null);
+      setState(() => _incomingCaptureBatch = null);
       return;
     }
     if (capture.status == CaptureStatus.analyzing) {
@@ -1124,7 +1208,7 @@ final class _HomeShellState extends State<HomeShell>
       return;
     }
 
-    setState(() => _incomingCaptureId = null);
+    setState(() => _incomingCaptureBatch = null);
     _openCapture(capture);
   }
 
@@ -1237,6 +1321,8 @@ final class _HomeDrawer extends StatelessWidget {
     required this.onSelect,
     required this.onOpenContents,
     required this.onOpenPast,
+    required this.onBackupContents,
+    required this.onClearContents,
   });
 
   final List<_HomeTab> tabs;
@@ -1244,6 +1330,8 @@ final class _HomeDrawer extends StatelessWidget {
   final int sharedCount;
   final ValueChanged<_HomeTab> onSelect;
   final VoidCallback onOpenContents;
+  final VoidCallback onBackupContents;
+  final VoidCallback onClearContents;
 
   /// Null when there are no plans at all, and then the drawer does not offer a
   /// door to what is behind them.
@@ -1340,6 +1428,36 @@ final class _HomeDrawer extends StatelessWidget {
                         openPast();
                       },
                     ),
+                  if (kDebugMode) ...[
+                    const Divider(height: 26, indent: 16, endIndent: 16),
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 2, 16, 10),
+                      child: Text(
+                        '개발 도구',
+                        style: TextStyle(
+                          color: AppTheme.muted,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    _DrawerItem(
+                      icon: Icons.archive_outlined,
+                      label: '콘텐츠 전체 백업(ZIP)',
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        onBackupContents();
+                      },
+                    ),
+                    _DrawerItem(
+                      icon: Icons.delete_sweep_outlined,
+                      label: '가져온 콘텐츠 전체 삭제',
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        onClearContents();
+                      },
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -1724,12 +1842,14 @@ final class _IncomingCaptureCard extends StatelessWidget {
   const _IncomingCaptureCard({
     required this.controller,
     required this.captureId,
+    required this.captureCount,
     required this.onDismiss,
     required this.onOpen,
   });
 
   final AppController controller;
   final String captureId;
+  final int captureCount;
   final VoidCallback onDismiss;
   final VoidCallback onOpen;
 
@@ -1742,7 +1862,9 @@ final class _IncomingCaptureCard extends StatelessWidget {
         if (capture == null) {
           return const SizedBox.shrink();
         }
-        final state = _CaptureArrivalState.from(capture);
+        final state = captureCount > 1
+            ? _CaptureArrivalState.batch(captureCount)
+            : _CaptureArrivalState.from(capture);
 
         return Material(
           color: AppTheme.surfaceRaised,
@@ -1835,6 +1957,16 @@ final class _CaptureArrivalState {
     required this.iconBackground,
     this.isLoading = false,
   });
+
+  factory _CaptureArrivalState.batch(int count) {
+    return _CaptureArrivalState(
+      title: '콘텐츠 $count개를 가져왔어요',
+      description: '콘텐츠에서 정리 상태와 결과를 확인해 주세요',
+      icon: Icons.collections_outlined,
+      iconColor: AppTheme.primary,
+      iconBackground: AppTheme.primarySoft,
+    );
+  }
 
   factory _CaptureArrivalState.from(CaptureRecord capture) {
     if (capture.status == CaptureStatus.sourceLimited &&

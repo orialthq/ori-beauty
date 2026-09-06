@@ -11,39 +11,19 @@ class IncomingShareStore(context: Context) {
     private val preferences =
         context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
-    @Synchronized
-    fun append(payload: IncomingSharePayload): Boolean {
-        val pending = readArray()
-        val item =
-            JSONObject()
-                .put("id", payload.id)
-                .put("receivedAtEpochMs", payload.receivedAtEpochMs)
-                .put("sharedText", payload.sharedText)
-                .put("discoveredUrl", payload.discoveredUrl)
-                .put("sourcePackage", payload.sourcePackage)
-                .put("mimeType", payload.mimeType)
-                .put("wasTruncated", payload.wasTruncated)
-                .put("originalLength", payload.originalLength)
-                .put("shareKind", payload.shareKind)
-                .put(
-                    "attachments",
-                    JSONArray().apply {
-                        payload.attachments.forEach { attachment ->
-                            put(
-                                JSONObject()
-                                    .put("id", attachment.id)
-                                    .put("filePath", attachment.filePath)
-                                    .put("mimeType", attachment.mimeType)
-                                    .put("byteSize", attachment.byteSize)
-                                    .put("width", attachment.width)
-                                    .put("height", attachment.height)
-                                    .put("sha256", attachment.sha256),
-                            )
-                        }
-                    },
-                )
+    fun append(payload: IncomingSharePayload): Boolean = appendAll(listOf(payload))
 
-        pending.put(item)
+    /**
+     * Appends a picker batch with one durable preferences commit. Either every
+     * payload becomes visible to Dart, or none of them do.
+     */
+    @Synchronized
+    fun appendAll(payloads: Collection<IncomingSharePayload>): Boolean {
+        if (payloads.isEmpty()) {
+            return true
+        }
+        val pending = readArray()
+        payloads.forEach { payload -> pending.put(payload.toJson()) }
         return writeArray(pending)
     }
 
@@ -153,6 +133,35 @@ class IncomingShareStore(context: Context) {
             .putString(KEY_PENDING_SHARES, value.toString())
             .commit()
     }
+
+    private fun IncomingSharePayload.toJson(): JSONObject =
+        JSONObject()
+            .put("id", id)
+            .put("receivedAtEpochMs", receivedAtEpochMs)
+            .put("sharedText", sharedText)
+            .put("discoveredUrl", discoveredUrl)
+            .put("sourcePackage", sourcePackage)
+            .put("mimeType", mimeType)
+            .put("wasTruncated", wasTruncated)
+            .put("originalLength", originalLength)
+            .put("shareKind", shareKind)
+            .put(
+                "attachments",
+                JSONArray().apply {
+                    attachments.forEach { attachment ->
+                        put(
+                            JSONObject()
+                                .put("id", attachment.id)
+                                .put("filePath", attachment.filePath)
+                                .put("mimeType", attachment.mimeType)
+                                .put("byteSize", attachment.byteSize)
+                                .put("width", attachment.width)
+                                .put("height", attachment.height)
+                                .put("sha256", attachment.sha256),
+                        )
+                    }
+                },
+            )
 
     private fun JSONArray.toAttachmentMaps(): List<Map<String, Any?>> {
         return buildList {
