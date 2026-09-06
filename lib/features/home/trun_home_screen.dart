@@ -718,18 +718,6 @@ final class _Headline extends StatelessWidget {
           LuffiMark(size: 88, secondaryColor: AppTheme.ink),
           SizedBox(height: 10),
           LuffiWordmark(fontSize: 52),
-          SizedBox(height: 25),
-          Text(
-            '모아둔 순간을,\n해보는 일상으로.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: AppTheme.muted,
-              fontSize: 17,
-              height: 1.65,
-              letterSpacing: -0.35,
-              fontWeight: FontWeight.w400,
-            ),
-          ),
         ],
       ),
     );

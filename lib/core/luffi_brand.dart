@@ -43,6 +43,7 @@ final class LuffiWordmark extends StatelessWidget {
     semanticsLabel: '러피',
     style: TextStyle(
       color: color,
+      fontFamily: 'SUIT',
       fontSize: fontSize,
       height: 1,
       letterSpacing: -fontSize * 0.055,

@@ -355,6 +355,146 @@ final class AppController extends ChangeNotifier {
     );
   }
 
+  Future<DevelopmentBackupRestorePlan> inspectDevelopmentBackup(File archive) {
+    return _developmentBackupService.inspectArchive(archive);
+  }
+
+  /// Replaces reader-imported content with one fully validated backup.
+  /// Plans and demo samples are outside the backup contract and stay intact.
+  Future<DevelopmentBackupRestoreResult> restoreDevelopmentBackup(
+    DevelopmentBackupRestorePlan plan,
+  ) {
+    final operation = _incomingDrainTail.then(
+      (_) => _restoreDevelopmentBackupOnce(plan),
+    );
+    _incomingDrainTail = operation.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) {
+        debugPrint('Development backup restore failed: $error\n$stackTrace');
+      },
+    );
+    return operation;
+  }
+
+  Future<DevelopmentBackupRestoreResult> _restoreDevelopmentBackupOnce(
+    DevelopmentBackupRestorePlan plan,
+  ) async {
+    try {
+      if (analyzingCount > 0 ||
+          _activeAnalysisCount > 0 ||
+          _activePlaceEnrichmentCount > 0 ||
+          _pendingAnalysisIds.isNotEmpty ||
+          _pendingPlaceEnrichmentIds.isNotEmpty) {
+        throw const DevelopmentBackupRestoreException('restore_busy');
+      }
+
+      final deletedCaptures = _captures
+          .where((capture) => capture.raw.origin != CaptureOrigin.demo)
+          .toList(growable: false);
+      try {
+        await _incomingShareService.acknowledge(
+          deletedCaptures.map((capture) => capture.raw.transportEventId),
+        );
+      } catch (error, stackTrace) {
+        debugPrint(
+          'Development backup restore could not clear native envelopes: '
+          '$error\n$stackTrace',
+        );
+        throw const DevelopmentBackupRestoreException(
+          'native_inbox_cleanup_failed',
+        );
+      }
+
+      final installed = await plan.installAttachments();
+      final previousCaptures = List<CaptureRecord>.of(_captures);
+      final previousGroups = List<ProductGroup>.of(_groups);
+      final previousTagSenses = Map<String, List<String>>.of(_tagSenses);
+      final previousSourceDeletionIds = Set<String>.of(
+        _sourceDeletionAvailableCaptureIds,
+      );
+      final previousAttemptedEnrichmentIds = Set<String>.of(
+        _attemptedPlaceEnrichment,
+      );
+      final previousDurablySavedIds = Set<String>.of(_durablySavedTransportIds);
+      final previousFilter = _filter;
+      final restored = <CaptureRecord>[];
+      final pendingAnalysisIds = <String>[];
+      try {
+        _captures
+          ..clear()
+          ..addAll(DemoCatalog.captures);
+        _groups
+          ..clear()
+          ..addAll(DemoCatalog.groups);
+        _tagSenses
+          ..clear()
+          ..addAll(plan.tagSenses);
+        _sourceDeletionAvailableCaptureIds.clear();
+        _attemptedPlaceEnrichment.clear();
+        _filter = CaptureFilter.all;
+        for (final persisted in plan.captures) {
+          final capture = _captureFromPersisted(persisted);
+          restored.add(capture);
+          if (capture.status == CaptureStatus.analyzing) {
+            pendingAnalysisIds.add(capture.raw.id);
+          }
+        }
+        _synchronizeRestoredGroupTags(restored);
+        _captures.insertAll(0, restored);
+        _unifySpellings();
+        if (!await _persistState()) {
+          throw const DevelopmentBackupRestoreException('snapshot_save_failed');
+        }
+      } on Object {
+        _captures
+          ..clear()
+          ..addAll(previousCaptures);
+        _groups
+          ..clear()
+          ..addAll(previousGroups);
+        _tagSenses
+          ..clear()
+          ..addAll(previousTagSenses);
+        _sourceDeletionAvailableCaptureIds
+          ..clear()
+          ..addAll(previousSourceDeletionIds);
+        _attemptedPlaceEnrichment
+          ..clear()
+          ..addAll(previousAttemptedEnrichmentIds);
+        _durablySavedTransportIds
+          ..clear()
+          ..addAll(previousDurablySavedIds);
+        _filter = previousFilter;
+        await installed.rollback();
+        rethrow;
+      }
+
+      notifyListeners();
+      for (final capture in deletedCaptures) {
+        if (previousSourceDeletionIds.contains(capture.raw.id)) {
+          try {
+            // Replacing app data must never turn into deleting a gallery
+            // original, so resolve every old native choice as "keep".
+            await _incomingShareService.keepSharedSource(
+              capture.raw.transportEventId,
+            );
+          } catch (error, stackTrace) {
+            debugPrint('Shared source keep failed: $error\n$stackTrace');
+          }
+        }
+        await _deleteUnreferencedManagedAttachments(capture);
+      }
+      _queueCaptureAnalysis(pendingAnalysisIds);
+      unawaited(_topUpTagSenses());
+      return DevelopmentBackupRestoreResult(
+        captureCount: restored.length,
+        imageCount: plan.imageCount,
+      );
+    } finally {
+      await plan.dispose();
+    }
+  }
+
   /// Deletes reader-imported content while preserving demo samples, plans and
   /// every source image still in the device gallery.
   ///
@@ -1937,65 +2077,9 @@ final class AppController extends ChangeNotifier {
         if (!knownTransportIds.add(persisted.transportEventId)) {
           continue;
         }
-        final share = persisted.toIncomingShare();
-        final prepared = _contentAnalysisService.prepareShare(
-          share,
-          origin: persisted.origin,
-        );
-        final analyzedWithoutFolder = switch (persisted.analysis) {
-          final analysis? => prepared.copyWith(
-            status: persisted.status,
-            analysis: analysis,
-          ),
-          null when persisted.attachments.isEmpty =>
-            _contentAnalysisService.analyzeShare(
-              share,
-              origin: persisted.origin,
-            ),
-          null => prepared,
-        };
-        final analyzed = analyzedWithoutFolder.copyWith(
-          tagOverride: persisted.tagOverride,
-          analysisMode: persisted.analysisMode,
-          batchRequestId: persisted.batchRequestId,
-          batchStatus: persisted.batchStatus,
-        );
+        final analyzed = _captureFromPersisted(persisted);
         if (analyzed.status == CaptureStatus.analyzing) {
           pendingAnalysisIds.add(analyzed.raw.id);
-        }
-        final reviewResolution = persisted.reviewResolution;
-        final identity = persisted.confirmedIdentity;
-        final groupId = persisted.groupId;
-        if (persisted.status == CaptureStatus.organized &&
-            identity != null &&
-            groupId != null) {
-          final organized = analyzed.copyWith(
-            status: CaptureStatus.organized,
-            groupId: groupId,
-            review: _restoredReview(
-              persisted: persisted,
-              analyzed: analyzed,
-              resolution: reviewResolution ?? ReviewResolution.confirmed,
-              identity: identity,
-            ),
-          );
-          _restoreGroup(organized, identity, groupId);
-          restored.add(organized);
-          continue;
-        }
-        if (reviewResolution != null) {
-          restored.add(
-            analyzed.copyWith(
-              status: persisted.status,
-              review: _restoredReview(
-                persisted: persisted,
-                analyzed: analyzed,
-                resolution: reviewResolution,
-                identity: identity,
-              ),
-            ),
-          );
-          continue;
         }
         restored.add(analyzed);
       }
@@ -2015,6 +2099,60 @@ final class AppController extends ChangeNotifier {
     } catch (error, stackTrace) {
       debugPrint('App snapshot restore failed: $error\n$stackTrace');
     }
+  }
+
+  CaptureRecord _captureFromPersisted(PersistedCapture persisted) {
+    final share = persisted.toIncomingShare();
+    final prepared = _contentAnalysisService.prepareShare(
+      share,
+      origin: persisted.origin,
+    );
+    final analyzedWithoutReview = switch (persisted.analysis) {
+      final analysis? => prepared.copyWith(
+        status: persisted.status,
+        analysis: analysis,
+      ),
+      null when persisted.attachments.isEmpty =>
+        _contentAnalysisService.analyzeShare(share, origin: persisted.origin),
+      null => prepared,
+    };
+    final analyzed = analyzedWithoutReview.copyWith(
+      tagOverride: persisted.tagOverride,
+      analysisMode: persisted.analysisMode,
+      batchRequestId: persisted.batchRequestId,
+      batchStatus: persisted.batchStatus,
+    );
+    final reviewResolution = persisted.reviewResolution;
+    final identity = persisted.confirmedIdentity;
+    final groupId = persisted.groupId;
+    if (persisted.status == CaptureStatus.organized &&
+        identity != null &&
+        groupId != null) {
+      final organized = analyzed.copyWith(
+        status: CaptureStatus.organized,
+        groupId: groupId,
+        review: _restoredReview(
+          persisted: persisted,
+          analyzed: analyzed,
+          resolution: reviewResolution ?? ReviewResolution.confirmed,
+          identity: identity,
+        ),
+      );
+      _restoreGroup(organized, identity, groupId);
+      return organized;
+    }
+    if (reviewResolution != null) {
+      return analyzed.copyWith(
+        status: persisted.status,
+        review: _restoredReview(
+          persisted: persisted,
+          analyzed: analyzed,
+          resolution: reviewResolution,
+          identity: identity,
+        ),
+      );
+    }
+    return analyzed;
   }
 
   /// [run] carrying [structured] in place of what it read, everything else as

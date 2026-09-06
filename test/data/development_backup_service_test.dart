@@ -271,6 +271,212 @@ void main() {
       );
     },
   );
+
+  test(
+    'backup can be inspected and restores verified images atomically',
+    () async {
+      final root = await Directory.systemTemp.createTemp(
+        'luffi-backup-restore-test-',
+      );
+      addTearDown(() async {
+        if (await root.exists()) await root.delete(recursive: true);
+      });
+      final sourceDirectory = Directory('${root.path}/source')..createSync();
+      final restoreDirectory = Directory('${root.path}/restored');
+      final image = File('${sourceDirectory.path}/original.png');
+      const imageBytes = <int>[
+        0x89,
+        0x50,
+        0x4e,
+        0x47,
+        0x0d,
+        0x0a,
+        0x1a,
+        0x0a,
+        1,
+        2,
+        3,
+        4,
+      ];
+      await image.writeAsBytes(imageBytes, flush: true);
+      final digest = sha256.convert(imageBytes).toString();
+      final capture = _captureWithAttachment(
+        id: 'restore-round-trip',
+        image: image,
+        imageBytes: imageBytes,
+        imageSha256: digest,
+        mimeType: 'image/png',
+      );
+      final service = DevelopmentBackupService(
+        restoreDirectoryProvider: () async => restoreDirectory,
+      );
+      final zip = await service.createArchive(
+        captures: [capture],
+        tagSenses: const {
+          '여행장소': ['나들이'],
+        },
+        outputDirectory: root,
+      );
+
+      final plan = await service.inspectArchive(zip);
+      addTearDown(plan.dispose);
+
+      expect(plan.captureCount, 1);
+      expect(plan.imageCount, 1);
+      expect(plan.imageBytes, imageBytes.length);
+      expect(plan.tagSenses, {
+        '여행장소': ['나들이'],
+      });
+      final restoredPath = '${restoreDirectory.path}/$digest.png';
+      expect(plan.captures.single.attachments.single.filePath, restoredPath);
+      expect(await File(restoredPath).exists(), isFalse);
+
+      final installed = await plan.installAttachments();
+      expect(await File(restoredPath).readAsBytes(), imageBytes);
+      await installed.rollback();
+      expect(await File(restoredPath).exists(), isFalse);
+    },
+  );
+
+  test('restore rejects an attachment whose checksum was changed', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'luffi-corrupt-restore-test-',
+    );
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    const expectedBytes = <int>[0xff, 0xd8, 0xff, 0xd9];
+    const corruptBytes = <int>[0xff, 0xd8, 0xff, 0x00];
+    final digest = sha256.convert(expectedBytes).toString();
+    final image = File('${root.path}/metadata.jpg');
+    await image.writeAsBytes(expectedBytes);
+    final capture = _captureWithAttachment(
+      id: 'corrupt-restore',
+      image: image,
+      imageBytes: expectedBytes,
+      imageSha256: digest,
+    );
+    final manifestCapture = PersistedCapture.fromJson({
+      ...capture.toJson(),
+      'attachments': [
+        {
+          ...capture.attachments.single.toJson(),
+          'filePath': 'attachments/$digest.jpg',
+        },
+      ],
+    });
+    final zip = await _writeArchive(
+      File('${root.path}/corrupt.zip'),
+      manifest: AppSnapshotCodec.encode([manifestCapture]),
+      entries: {'attachments/$digest.jpg': corruptBytes},
+    );
+    final service = DevelopmentBackupService(
+      restoreDirectoryProvider: () async => Directory('${root.path}/restore'),
+    );
+
+    await expectLater(
+      service.inspectArchive(zip),
+      throwsA(
+        isA<DevelopmentBackupRestoreException>().having(
+          (error) => error.code,
+          'code',
+          'attachment_checksum_failed',
+        ),
+      ),
+    );
+  });
+
+  test('restore rejects unexpected or traversing ZIP entries', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'luffi-unsafe-restore-test-',
+    );
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final zip = await _writeArchive(
+      File('${root.path}/unsafe.zip'),
+      manifest: AppSnapshotCodec.encode(const []),
+      entries: const {
+        '../outside.txt': [1, 2, 3],
+      },
+    );
+    final service = DevelopmentBackupService(
+      restoreDirectoryProvider: () async => Directory('${root.path}/restore'),
+    );
+
+    await expectLater(
+      service.inspectArchive(zip),
+      throwsA(
+        isA<DevelopmentBackupRestoreException>().having(
+          (error) => error.code,
+          'code',
+          'invalid_backup',
+        ),
+      ),
+    );
+    expect(await File('${root.parent.path}/outside.txt').exists(), isFalse);
+  });
+
+  test('restore never overwrites a different existing image', () async {
+    final root = await Directory.systemTemp.createTemp(
+      'luffi-conflicting-restore-test-',
+    );
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final source = File('${root.path}/source.jpg');
+    const sourceBytes = <int>[0xff, 0xd8, 0xff, 0xd9];
+    await source.writeAsBytes(sourceBytes);
+    final digest = sha256.convert(sourceBytes).toString();
+    final restoreDirectory = Directory('${root.path}/restore');
+    final service = DevelopmentBackupService(
+      restoreDirectoryProvider: () async => restoreDirectory,
+    );
+    final zip = await service.createArchive(
+      captures: [
+        _captureWithAttachment(
+          id: 'conflicting-image',
+          image: source,
+          imageBytes: sourceBytes,
+          imageSha256: digest,
+        ),
+      ],
+      tagSenses: const {},
+      outputDirectory: root,
+    );
+    final plan = await service.inspectArchive(zip);
+    addTearDown(plan.dispose);
+    await restoreDirectory.create();
+    final existing = File('${restoreDirectory.path}/$digest.jpg');
+    const existingBytes = <int>[0xff, 0xd8, 0xff, 0x00];
+    await existing.writeAsBytes(existingBytes);
+
+    await expectLater(
+      plan.installAttachments(),
+      throwsA(
+        isA<DevelopmentBackupRestoreException>().having(
+          (error) => error.code,
+          'code',
+          'attachment_conflict',
+        ),
+      ),
+    );
+    expect(await existing.readAsBytes(), existingBytes);
+  });
+}
+
+Future<File> _writeArchive(
+  File output, {
+  required String manifest,
+  required Map<String, List<int>> entries,
+}) async {
+  final archive = Archive()
+    ..addFile(ArchiveFile.string('manifest.json', manifest));
+  for (final entry in entries.entries) {
+    archive.addFile(ArchiveFile(entry.key, entry.value.length, entry.value));
+  }
+  await output.writeAsBytes(ZipEncoder().encode(archive)!);
+  return output;
 }
 
 PersistedCapture _captureWithAttachment({
@@ -278,6 +484,7 @@ PersistedCapture _captureWithAttachment({
   required File image,
   required List<int> imageBytes,
   required String imageSha256,
+  String mimeType = 'image/jpeg',
 }) => PersistedCapture(
   transportEventId: id,
   receivedAt: DateTime.utc(2026, 9, 6),
@@ -285,7 +492,7 @@ PersistedCapture _captureWithAttachment({
   sharedText: '',
   discoveredUrl: null,
   sourcePackage: 'gallery',
-  mimeType: 'image/jpeg',
+  mimeType: mimeType,
   wasTruncated: false,
   originalLength: 0,
   status: CaptureStatus.needsReview,
@@ -298,7 +505,7 @@ PersistedCapture _captureWithAttachment({
     IncomingAttachment(
       id: 'attachment-$id',
       filePath: image.path,
-      mimeType: 'image/jpeg',
+      mimeType: mimeType,
       byteSize: imageBytes.length,
       sha256: imageSha256,
       width: 1,

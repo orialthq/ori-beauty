@@ -1,11 +1,14 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/luffi_brand.dart';
+import '../../data/development_backup_service.dart';
 import '../../data/external_app_navigation_service.dart';
 import '../../data/incoming_share_service.dart';
 import '../../data/place_reminder_service.dart';
@@ -391,6 +394,94 @@ final class _HomeShellState extends State<HomeShell>
     }
   }
 
+  Future<void> _restoreDevelopmentBackup() async {
+    if (_developmentDataActionInFlight) return;
+    _developmentDataActionInFlight = true;
+    DevelopmentBackupRestorePlan? plan;
+    try {
+      final selected = await openFile(
+        acceptedTypeGroups: const [
+          XTypeGroup(
+            label: 'luffi 백업 ZIP',
+            extensions: ['zip'],
+            mimeTypes: ['application/zip', 'application/x-zip-compressed'],
+          ),
+        ],
+      );
+      if (selected == null || !mounted) return;
+
+      _showMessage('백업 ZIP을 안전하게 확인하고 있어요.');
+      plan = await widget.controller.inspectDevelopmentBackup(
+        File(selected.path),
+      );
+      if (!mounted) return;
+      final inspectedPlan = plan;
+
+      final currentCount = widget.controller.userCaptureCount;
+      final pendingWarning = widget.controller.pendingBatchCount > 0
+          ? '\n\n이미 서버에 접수된 절약 분석은 취소되지 않아 요금이 발생할 수 있어요.'
+          : '';
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          backgroundColor: AppTheme.surface,
+          surfaceTintColor: Colors.transparent,
+          title: const Text('이 백업으로 복원할까요?'),
+          content: Text(
+            '현재 가져온 콘텐츠 $currentCount개를 백업의 콘텐츠 '
+            '${inspectedPlan.captureCount}개로 교체해요. 백업 이미지 '
+            '${inspectedPlan.imageCount}개도 함께 복원돼요.\n\n'
+            '갤러리 원본과 계획함의 계획은 그대로 남고, 이 작업은 '
+            '되돌릴 수 없어요.$pendingWarning',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('취소'),
+            ),
+            FilledButton(
+              key: const Key('confirm-restore-development-backup'),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('복원하기'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+
+      final result = await widget.controller.restoreDevelopmentBackup(
+        inspectedPlan,
+      );
+      plan = null;
+      if (!mounted) return;
+      setState(() => _incomingCaptureBatch = null);
+      _showMessage(
+        '콘텐츠 ${result.captureCount}개와 이미지 ${result.imageCount}개를 복원했어요.',
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Development backup restore failed: $error\n$stackTrace');
+      if (mounted) _showMessage(_developmentRestoreErrorMessage(error));
+    } finally {
+      await plan?.dispose();
+      _developmentDataActionInFlight = false;
+    }
+  }
+
+  String _developmentRestoreErrorMessage(Object error) {
+    if (error is! DevelopmentBackupRestoreException) {
+      return '백업을 복원하지 못했어요. 다른 ZIP인지 확인해 주세요.';
+    }
+    return switch (error.code) {
+      'backup_missing' => '선택한 백업 파일을 찾을 수 없어요.',
+      'backup_too_large' => '백업 파일이 너무 커서 안전하게 열 수 없어요.',
+      'attachment_checksum_failed' => '백업 속 이미지가 손상되어 복원을 멈췄어요.',
+      'attachment_conflict' => '같은 이름의 다른 이미지가 있어 복원을 멈췄어요.',
+      'restore_busy' => '진행 중인 이미지 정리가 끝난 뒤 다시 복원해 주세요.',
+      'snapshot_save_failed' => '복원 내용을 저장하지 못해 기존 데이터를 그대로 뒀어요.',
+      _ => 'luffi에서 만든 올바른 백업 ZIP인지 확인해 주세요.',
+    };
+  }
+
   Future<void> _confirmAndClearUserCaptures() async {
     if (_developmentDataActionInFlight) return;
     final count = widget.controller.userCaptureCount;
@@ -408,8 +499,7 @@ final class _HomeShellState extends State<HomeShell>
           '데모를 제외한 콘텐츠 $count개와 luffi가 보관한 이미지 사본이 '
           '삭제돼요. 갤러리 원본과 계획함의 계획은 그대로 남아요. '
           '되돌릴 수 없으니 필요하면 먼저 백업 ZIP을 '
-          '내보내 주세요. 현재 앱에서는 ZIP을 바로 복원하는 '
-          '기능은 제공하지 않아요.'
+          '내보내 주세요.'
           '${widget.controller.pendingBatchCount > 0 ? '\n\n서버에 접수된 절약 분석은 취소되지 않아 요금이 발생할 수 있어요.' : ''}',
         ),
         actions: [
@@ -620,6 +710,7 @@ final class _HomeShellState extends State<HomeShell>
             onOpenContents: _openContentList,
             onOpenPast: planController == null ? null : _openPastPlans,
             onBackupContents: _shareDevelopmentBackup,
+            onRestoreContents: _restoreDevelopmentBackup,
             onClearContents: _confirmAndClearUserCaptures,
           ),
           body: Stack(
@@ -1329,6 +1420,7 @@ final class _HomeDrawer extends StatelessWidget {
     required this.onOpenContents,
     required this.onOpenPast,
     required this.onBackupContents,
+    required this.onRestoreContents,
     required this.onClearContents,
   });
 
@@ -1338,6 +1430,7 @@ final class _HomeDrawer extends StatelessWidget {
   final ValueChanged<_HomeTab> onSelect;
   final VoidCallback onOpenContents;
   final VoidCallback onBackupContents;
+  final VoidCallback onRestoreContents;
   final VoidCallback onClearContents;
 
   /// Null when there are no plans at all, and then the drawer does not offer a
@@ -1446,6 +1539,14 @@ final class _HomeDrawer extends StatelessWidget {
                       onTap: () {
                         Navigator.of(context).pop();
                         onBackupContents();
+                      },
+                    ),
+                    _DrawerItem(
+                      icon: Icons.unarchive_outlined,
+                      label: '백업 ZIP에서 복원',
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        onRestoreContents();
                       },
                     ),
                     _DrawerItem(

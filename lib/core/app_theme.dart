@@ -298,11 +298,8 @@ abstract final class AppTheme {
       scaffoldBackgroundColor: background,
       canvasColor: background,
       splashFactory: InkRipple.splashFactory,
-      fontFamilyFallback: const [
-        'Gothic A1',
-        'Apple SD Gothic Neo',
-        'sans-serif',
-      ],
+      fontFamily: 'SUIT',
+      fontFamilyFallback: const ['Apple SD Gothic Neo', 'sans-serif'],
       textTheme: const TextTheme(
         displaySmall: TextStyle(
           fontSize: 38,

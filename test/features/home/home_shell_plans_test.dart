@@ -30,6 +30,10 @@ void main() {
 
     await _pumpHomeShell(tester, fixture);
 
+    final homeContext = tester.element(find.byType(HomeShell));
+    expect(Theme.of(homeContext).textTheme.bodyMedium?.fontFamily, 'SUIT');
+    expect(find.text('모아둔 순간을,\n해보는 일상으로.'), findsNothing);
+
     expect(find.byType(NavigationBar), findsNothing);
 
     await _openPlans(tester);
@@ -84,6 +88,7 @@ void main() {
     }
     expect(find.text('개발 도구'), findsOneWidget);
     expect(find.text('콘텐츠 전체 백업(ZIP)'), findsOneWidget);
+    expect(find.text('백업 ZIP에서 복원'), findsOneWidget);
     expect(find.text('가져온 콘텐츠 전체 삭제'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('drawer-item-계획함')));
