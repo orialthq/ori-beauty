@@ -439,8 +439,11 @@ class MainActivity : FlutterActivity() {
                                 .getOrNull() ?: "image/*"
                         incomingShareIngestor.ingest(
                             intent =
-                                Intent(Intent.ACTION_VIEW, selectedUri).apply {
-                                    type = mimeType
+                                Intent(Intent.ACTION_VIEW).apply {
+                                    // Intent.setType clears data that was set by the
+                                    // (action, uri) constructor. Set both together so
+                                    // the picker URI reaches the image ingestor.
+                                    setDataAndType(selectedUri, mimeType)
                                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                 },
                             sourcePackage = sourcePackage,
