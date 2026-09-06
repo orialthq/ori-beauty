@@ -82,11 +82,14 @@ if (!apiKey) {
     tagMergeService,
     tagSenseService,
     enrichmentModel,
+    // Usage counters reveal activity patterns even though they contain no
+    // capture content. Keep them off unless a local operator opts in.
+    analysisStatsEnabled: process.env.TRUN_ON_DEBUG_METRICS === "1",
   });
 
   const host = process.env.HOST || "127.0.0.1";
   const port = parsePort(process.env.PORT);
-  server.requestTimeout = 65_000;
+  server.requestTimeout = 95_000;
   server.headersTimeout = 15_000;
   server.keepAliveTimeout = 5_000;
 

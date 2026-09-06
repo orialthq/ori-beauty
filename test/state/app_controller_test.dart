@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ori_beauty/data/app_snapshot_store.dart';
 import 'package:ori_beauty/data/content_analysis_service.dart';
 import 'package:ori_beauty/data/incoming_share_service.dart';
+import 'package:ori_beauty/data/place_enrichment_service.dart';
 import 'package:ori_beauty/domain/models.dart';
 import 'package:ori_beauty/state/app_controller.dart';
 
@@ -988,7 +989,9 @@ void main() {
       imageService.add(imageShare('share-queue-second', secondSource, '2'));
       await _waitUntil(
         () => imageController.captures.any(
-          (capture) => capture.raw.transportEventId == 'share-queue-second',
+          (capture) =>
+              capture.raw.transportEventId == 'share-queue-second' &&
+              capture.status != CaptureStatus.analyzing,
         ),
       );
 
@@ -1000,8 +1003,9 @@ void main() {
             )
             .single
             .status,
-        CaptureStatus.analyzing,
+        CaptureStatus.needsReview,
       );
+      expect(analysisService.analysisCalls, 2);
 
       analysisService.releaseFirst();
       await _waitUntil(
@@ -1012,10 +1016,233 @@ void main() {
       expect(analysisService.analysisCalls, 2);
     },
   );
+
+  test(
+    'a 75-image batch is durable and acknowledged before a bounded FIFO analysis pool',
+    () async {
+      IncomingShare imageShare(int index) => IncomingShare(
+        id: 'picker-batch-$index',
+        receivedAt: DateTime(2026, 9, 6, 12, 0, index),
+        sharedText: '',
+        discoveredUrl: null,
+        mimeType: 'image/jpeg',
+        shareKind: ShareKind.image,
+        attachments: [
+          IncomingAttachment(
+            id: 'picker-attachment-$index',
+            filePath: '/virtual-gallery/picker-$index.jpg',
+            mimeType: 'image/jpeg',
+            byteSize: 3,
+            width: 1,
+            height: 1,
+            sha256: index.toRadixString(16).padLeft(64, '0'),
+          ),
+        ],
+      );
+
+      final imageService = _RecordingIncomingShareService();
+      for (var index = 0; index < 75; index += 1) {
+        imageService.add(imageShare(index));
+      }
+      final snapshotStore = InMemoryAppSnapshotStore();
+      String? snapshotAtFirstAnalysis;
+      var pendingCountAtFirstAnalysis = -1;
+      var acknowledgeCallsAtFirstAnalysis = -1;
+      final analysisService = _GatedConcurrentAnalysisService(
+        onStart: (_) {
+          snapshotAtFirstAnalysis ??= snapshotStore.snapshot;
+          if (pendingCountAtFirstAnalysis == -1) {
+            pendingCountAtFirstAnalysis = imageService.pendingCount;
+            acknowledgeCallsAtFirstAnalysis = imageService.acknowledgeCallCount;
+          }
+        },
+      );
+      final imageController = AppController(
+        imageService,
+        analysisService,
+        snapshotStore,
+      );
+      addTearDown(imageController.dispose);
+      final announcements = <IncomingCaptureBatch>[];
+      final subscription = imageController.incomingCaptureAdded.listen(
+        announcements.add,
+      );
+      addTearDown(subscription.cancel);
+
+      await imageController.initialize();
+
+      expect(analysisService.startedCaptureIds, [
+        'capture-picker-batch-0',
+        'capture-picker-batch-1',
+        'capture-picker-batch-2',
+      ]);
+      expect(analysisService.activeCount, 3);
+      expect(
+        analysisService.maxActiveCount,
+        AppController.maxConcurrentCaptureAnalyses,
+      );
+      expect(pendingCountAtFirstAnalysis, 0);
+      expect(acknowledgeCallsAtFirstAnalysis, 1);
+      expect(imageService.acknowledgedTransportIds, hasLength(75));
+      final initiallyPersisted = AppSnapshotCodec.decode(
+        snapshotAtFirstAnalysis!,
+      );
+      expect(initiallyPersisted, hasLength(75));
+      expect(
+        initiallyPersisted.every(
+          (capture) => capture.status == CaptureStatus.analyzing,
+        ),
+        isTrue,
+      );
+      expect(announcements, hasLength(1));
+      expect(announcements.single.captureIds, hasLength(75));
+
+      // Requeueing an already active item must not start a duplicate request.
+      imageController.retryAnalysis('capture-picker-batch-0');
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        analysisService.startedCaptureIds.where(
+          (id) => id == 'capture-picker-batch-0',
+        ),
+        hasLength(1),
+      );
+
+      // Whichever worker finishes first, the next waiting id starts first.
+      analysisService.release('capture-picker-batch-1');
+      await _waitUntil(() => analysisService.startedCaptureIds.length == 4);
+      expect(analysisService.startedCaptureIds.last, 'capture-picker-batch-3');
+      expect(analysisService.activeCount, 3);
+
+      analysisService.releaseAll();
+      await _waitUntil(() => imageController.analyzingCount == 0);
+
+      expect(analysisService.startedCaptureIds, hasLength(75));
+      expect(analysisService.startedCaptureIds.toSet(), hasLength(75));
+      expect(analysisService.maxActiveCount, 3);
+      expect(analysisService.activeCount, 0);
+      expect(announcements, hasLength(1));
+      expect(
+        imageController.captures
+            .where((capture) => capture.raw.origin != CaptureOrigin.demo)
+            .every((capture) => capture.status == CaptureStatus.needsReview),
+        isTrue,
+      );
+      final finallyPersisted = await snapshotStore.load();
+      expect(finallyPersisted, hasLength(75));
+      expect(
+        finallyPersisted.every(
+          (capture) => capture.status == CaptureStatus.needsReview,
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'place enrichment is a one-worker FIFO that skips stale work and survives failure',
+    () async {
+      final originalDebugPrint = debugPrint;
+      debugPrint = (message, {wrapWidth}) {};
+      addTearDown(() => debugPrint = originalDebugPrint);
+      final imageService = _RecordingIncomingShareService();
+      for (var index = 0; index < 6; index += 1) {
+        imageService.add(
+          IncomingShare(
+            id: 'place-batch-$index',
+            receivedAt: DateTime(2026, 9, 6, 13, 0, index),
+            sharedText: index == 2 ? '장소가 없는 콘텐츠' : '장소 $index',
+            discoveredUrl: null,
+          ),
+        );
+      }
+      final analysisService = _ImmediatePlaceAnalysisService(
+        noPlaceCaptureIds: const {'capture-place-batch-2'},
+      );
+      final enrichmentService = _GatedPlaceEnrichmentService();
+      final imageController = AppController(
+        imageService,
+        analysisService,
+        InMemoryAppSnapshotStore(),
+        null,
+        enrichmentService,
+      );
+      addTearDown(imageController.dispose);
+
+      await imageController.initialize();
+      await _waitUntil(
+        () =>
+            imageController.analyzingCount == 0 &&
+            enrichmentService.startedNames.length == 1,
+      );
+
+      // The optional lookup is blocked, but all six primary analyses have
+      // already persisted and released the three analysis workers.
+      expect(analysisService.startedCaptureIds, hasLength(6));
+      expect(enrichmentService.startedNames, ['장소 0']);
+      expect(enrichmentService.activeCount, 1);
+      expect(
+        enrichmentService.maxActiveCount,
+        AppController.maxConcurrentPlaceEnrichments,
+      );
+
+      // A retry of the active capture must not enqueue its place twice.
+      imageController.retryAnalysis('capture-place-batch-0');
+      await _waitUntil(() => analysisService.startedCaptureIds.length == 7);
+      await _waitUntil(
+        () =>
+            imageController.captureById('capture-place-batch-0')?.status !=
+            CaptureStatus.analyzing,
+      );
+      expect(enrichmentService.startedNames, ['장소 0']);
+
+      // The next queued capture is removed before its turn, while capture 2
+      // has no place at all. Neither may call the enrichment service.
+      expect(
+        await imageController.deleteCapture('capture-place-batch-1'),
+        isTrue,
+      );
+      enrichmentService.fail('장소 0');
+      await _waitUntil(() => enrichmentService.startedNames.length == 2);
+      expect(enrichmentService.startedNames, ['장소 0', '장소 3']);
+      expect(enrichmentService.activeCount, 1);
+
+      enrichmentService.releaseAll();
+      await _waitUntil(
+        () =>
+            enrichmentService.startedNames.length == 4 &&
+            enrichmentService.activeCount == 0,
+      );
+      await _waitUntil(
+        () =>
+            [
+              'capture-place-batch-3',
+              'capture-place-batch-4',
+              'capture-place-batch-5',
+            ].every(
+              (captureId) => imageController
+                  .captureById(captureId)!
+                  .contentTags
+                  .any((tag) => tag.value == '웹 보강'),
+            ),
+      );
+
+      expect(enrichmentService.startedNames, ['장소 0', '장소 3', '장소 4', '장소 5']);
+      expect(enrichmentService.settledNames, hasLength(4));
+      expect(enrichmentService.maxActiveCount, 1);
+      expect(imageController.captureById('capture-place-batch-1'), isNull);
+      expect(
+        imageController
+            .captureById('capture-place-batch-2')!
+            .contentTags
+            .any((tag) => tag.value == '웹 보강'),
+        isFalse,
+      );
+    },
+  );
 }
 
 Future<void> _waitUntil(bool Function() predicate) async {
-  for (var attempt = 0; attempt < 100; attempt += 1) {
+  for (var attempt = 0; attempt < 400; attempt += 1) {
     if (predicate()) return;
     await Future<void>.delayed(const Duration(milliseconds: 5));
   }
@@ -1124,11 +1351,189 @@ final class _GateFirstAnalysisService implements ContentAnalysisService {
   }
 }
 
+final class _GatedConcurrentAnalysisService implements ContentAnalysisService {
+  _GatedConcurrentAnalysisService({this.onStart});
+
+  static const _baseline = BaselineContentAnalysisService();
+  final void Function(CaptureRecord capture)? onStart;
+  final List<String> startedCaptureIds = [];
+  final Map<String, ({CaptureRecord capture, Completer<AnalysisRun> gate})>
+  _inFlight = {};
+  var activeCount = 0;
+  var maxActiveCount = 0;
+  var _releaseImmediately = false;
+
+  @override
+  CaptureRecord analyzeShare(
+    IncomingShare share, {
+    CaptureOrigin origin = CaptureOrigin.androidShare,
+  }) => _baseline.prepareShare(share, origin: origin);
+
+  @override
+  CaptureRecord prepareShare(
+    IncomingShare share, {
+    CaptureOrigin origin = CaptureOrigin.androidShare,
+  }) => _baseline.prepareShare(share, origin: origin);
+
+  @override
+  Future<AnalysisRun> analyze(CaptureRecord capture) {
+    startedCaptureIds.add(capture.raw.id);
+    activeCount += 1;
+    if (activeCount > maxActiveCount) {
+      maxActiveCount = activeCount;
+    }
+    onStart?.call(capture);
+    final gate = Completer<AnalysisRun>();
+    _inFlight[capture.raw.id] = (capture: capture, gate: gate);
+    if (_releaseImmediately) {
+      gate.complete(_StructuredAnalysisService._analysisFor(capture));
+    }
+    return gate.future.whenComplete(() {
+      activeCount -= 1;
+      _inFlight.remove(capture.raw.id);
+    });
+  }
+
+  void release(String captureId) {
+    final pending = _inFlight[captureId];
+    if (pending == null || pending.gate.isCompleted) return;
+    pending.gate.complete(
+      _StructuredAnalysisService._analysisFor(pending.capture),
+    );
+  }
+
+  void releaseAll() {
+    _releaseImmediately = true;
+    for (final captureId in _inFlight.keys.toList(growable: false)) {
+      release(captureId);
+    }
+  }
+}
+
+final class _ImmediatePlaceAnalysisService implements ContentAnalysisService {
+  _ImmediatePlaceAnalysisService({this.noPlaceCaptureIds = const {}});
+
+  static const _baseline = BaselineContentAnalysisService();
+  final Set<String> noPlaceCaptureIds;
+  final List<String> startedCaptureIds = [];
+
+  @override
+  CaptureRecord analyzeShare(
+    IncomingShare share, {
+    CaptureOrigin origin = CaptureOrigin.androidShare,
+  }) => _baseline.prepareShare(share, origin: origin);
+
+  @override
+  CaptureRecord prepareShare(
+    IncomingShare share, {
+    CaptureOrigin origin = CaptureOrigin.androidShare,
+  }) => _baseline.prepareShare(share, origin: origin);
+
+  @override
+  Future<AnalysisRun> analyze(CaptureRecord capture) async {
+    startedCaptureIds.add(capture.raw.id);
+    final suffix = capture.raw.transportEventId.split('-').last;
+    final hasPlace = !noPlaceCaptureIds.contains(capture.raw.id);
+    final placeName = hasPlace ? '장소 $suffix' : null;
+    final structured = StructuredContentAnalysis(
+      schemaVersion: '2.0',
+      model: 'test-place-model',
+      domain: hasPlace ? ContentDomain.food : ContentDomain.unknown,
+      contentKind: hasPlace ? ContentKind.place : ContentKind.unknown,
+      tags: const [ContentTag(value: '저장')],
+      completeness: StructuredCompleteness.complete,
+      title: StructuredTitle(
+        value: placeName ?? '장소 없음',
+        status: ObservedStatus.observed,
+        confidence: 0.9,
+        evidenceIds: const [],
+      ),
+      place: hasPlace
+          ? StructuredPlace(
+              name: placeName,
+              address: null,
+              searchArea: null,
+              category: PlaceCategory.restaurant,
+              confidence: 0.9,
+              evidenceIds: const [],
+            )
+          : null,
+      summary: '테스트 분석',
+      evidence: const [],
+      ingredientGroups: const [],
+      steps: const [],
+      facts: const [],
+      conflicts: const [],
+      warnings: const [],
+    );
+    return AnalysisRun(
+      id: 'analysis-${capture.raw.transportEventId}',
+      inputId: capture.raw.id,
+      normalizerVersion: capture.normalized.normalizerVersion,
+      analyzerVersion: 'test-place-v1',
+      status: AnalysisRunStatus.succeeded,
+      completedAt: capture.raw.receivedAt,
+      evidence: const [],
+      productMentions: const [],
+      statements: const [],
+      disclosure: DisclosureObservation.unknown,
+      structuredContent: structured,
+    );
+  }
+}
+
+final class _GatedPlaceEnrichmentService implements PlaceEnrichmentService {
+  final List<String> startedNames = [];
+  final List<String> settledNames = [];
+  final Map<String, Completer<List<ContentTag>>> _inFlight = {};
+  var activeCount = 0;
+  var maxActiveCount = 0;
+  var _releaseImmediately = false;
+
+  @override
+  Future<List<ContentTag>> enrich({required String name, String? searchArea}) {
+    startedNames.add(name);
+    activeCount += 1;
+    if (activeCount > maxActiveCount) {
+      maxActiveCount = activeCount;
+    }
+    final gate = Completer<List<ContentTag>>();
+    _inFlight[name] = gate;
+    if (_releaseImmediately) {
+      gate.complete(_result);
+    }
+    return gate.future.whenComplete(() {
+      activeCount -= 1;
+      settledNames.add(name);
+      _inFlight.remove(name);
+    });
+  }
+
+  void fail(String name) {
+    final gate = _inFlight[name];
+    if (gate == null || gate.isCompleted) return;
+    gate.completeError(StateError('simulated place enrichment failure'));
+  }
+
+  void releaseAll() {
+    _releaseImmediately = true;
+    for (final gate in _inFlight.values.toList(growable: false)) {
+      if (!gate.isCompleted) gate.complete(_result);
+    }
+  }
+
+  static const _result = [ContentTag(value: '웹 보강', source: TagSource.web)];
+}
+
 final class _RecordingIncomingShareService implements IncomingShareService {
   final _pendingController = StreamController<void>.broadcast();
   final _shares = <IncomingShare>[];
   final keptTransportIds = <String>[];
   final deletedTransportIds = <String>[];
+  final acknowledgedTransportIds = <String>[];
+  var acknowledgeCallCount = 0;
+
+  int get pendingCount => _shares.length;
 
   void add(IncomingShare share) {
     _shares.add(share);
@@ -1159,10 +1564,12 @@ final class _RecordingIncomingShareService implements IncomingShareService {
 
   @override
   Future<void> acknowledge(Iterable<String> ids) async {
+    acknowledgeCallCount += 1;
     if (failAcknowledge) {
       throw StateError('simulated acknowledge failure');
     }
     final acknowledged = ids.toSet();
+    acknowledgedTransportIds.addAll(acknowledged);
     _shares.removeWhere((share) => acknowledged.contains(share.id));
   }
 

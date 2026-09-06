@@ -1,3 +1,9 @@
+import { SCHEMA_VERSION } from "./constants.js";
+
+// Bump independently when the instructions change without a response-schema
+// revision. This keeps cache routing and rollout metrics unambiguous.
+const ANALYSIS_PROMPT_VERSION = "1";
+
 const SYSTEM_INSTRUCTIONS = `
 You extract structured facts from a user's social-media screenshot.
 
@@ -100,6 +106,17 @@ export function buildOpenAIRequest({
   return {
     model,
     store: false,
+    // This key contains no reader or capture data. It only keeps requests with
+    // the same analysis contract on the same cache route. The long static
+    // instructions stay before per-capture metadata and image bytes so OpenAI's
+    // automatic prefix cache can reuse them across a large import.
+    prompt_cache_key:
+      `trun-on-analysis-${model}-p${ANALYSIS_PROMPT_VERSION}` +
+      `-s${SCHEMA_VERSION}`,
+    prompt_cache_options: {
+      mode: "implicit",
+      ttl: "30m",
+    },
     reasoning: {
       // Low read only the title and called it a day; medium reads the menu
       // lines the label is supposed to be derived from, for the same latency.

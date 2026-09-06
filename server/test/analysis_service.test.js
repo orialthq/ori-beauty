@@ -57,6 +57,14 @@ test("builds the stateless original-detail Luna request and parses output", asyn
   );
   assert.equal(capturedBody.model, MODEL);
   assert.equal(capturedBody.store, false);
+  assert.equal(
+    capturedBody.prompt_cache_key,
+    "trun-on-analysis-gpt-5.6-luna-p1-s2.1",
+  );
+  assert.deepEqual(capturedBody.prompt_cache_options, {
+    mode: "implicit",
+    ttl: "30m",
+  });
   assert.deepEqual(capturedBody.reasoning, { effort: "medium" });
   assert.equal(capturedBody.input[0].content[1].detail, "original");
   assert.equal(
@@ -455,3 +463,456 @@ test("bounds a slow injected transport even when it ignores abort", async () => 
       error instanceof OpenAITransportError && error.kind === "timeout",
   );
 });
+
+test("does not reuse a slot until a timed-out transport actually settles", async () => {
+  const firstTransport = deferred();
+  let transportCalls = 0;
+  const service = createAnalysisService({
+    maxConcurrent: 1,
+    timeoutMs: 10,
+    transport: {
+      createResponse() {
+        transportCalls += 1;
+        if (transportCalls === 1) {
+          return firstTransport.promise;
+        }
+        return completedResponse({ input_tokens: 3 });
+      },
+    },
+  });
+
+  await assert.rejects(
+    service.analyze(uniqueInput(0)),
+    (error) =>
+      error instanceof OpenAITransportError && error.kind === "timeout",
+  );
+  const secondAnalysis = service.analyze(uniqueInput(1));
+  await nextTurn();
+
+  assert.equal(transportCalls, 1);
+  assert.equal(service.getStats().activeUpstreamRequests, 1);
+  assert.equal(service.getStats().queuedUpstreamRequests, 1);
+
+  firstTransport.resolve(completedResponse({ input_tokens: 2 }));
+  await secondAnalysis;
+
+  assert.equal(transportCalls, 2);
+  assert.equal(service.getStats().inputTokens, 5);
+  assert.equal(service.getStats().activeUpstreamRequests, 0);
+  assert.equal(service.getStats().queuedUpstreamRequests, 0);
+});
+
+test("deduplicates exact in-flight requests and isolates cached results", async () => {
+  const firstResponse = deferred();
+  let transportCalls = 0;
+  const service = createAnalysisService({
+    transport: {
+      async createResponse() {
+        transportCalls += 1;
+        if (transportCalls === 1) {
+          return firstResponse.promise;
+        }
+        return completedResponse({
+          input_tokens: "not-a-number",
+          input_tokens_details: { cached_tokens: null },
+          output_tokens: Number.NaN,
+          output_tokens_details: { reasoning_tokens: Number.POSITIVE_INFINITY },
+        });
+      },
+    },
+  });
+
+  const firstPromise = service.analyze(input);
+  const duplicatePromise = service.analyze({
+    ...input,
+    capture: {
+      ...input.capture,
+      // The private id is intentionally absent from the effective model request.
+      id: "another-private-id",
+    },
+  });
+  await nextTurn();
+
+  assert.equal(transportCalls, 1);
+  assert.equal(service.getStats().activeUpstreamRequests, 1);
+
+  firstResponse.resolve(completedResponse({
+    input_tokens: 120,
+    input_tokens_details: { cached_tokens: 20 },
+    output_tokens: 30,
+    output_tokens_details: { reasoning_tokens: 10 },
+  }));
+  const [first, duplicate] = await Promise.all([
+    firstPromise,
+    duplicatePromise,
+  ]);
+
+  assert.deepEqual(first, duplicate);
+  assert.notStrictEqual(first, duplicate);
+  assert.notStrictEqual(first.title, duplicate.title);
+  first.title.value = "호출자가 바꾼 제목";
+  assert.equal(duplicate.title.value, "된장찌개");
+
+  const cached = await service.analyze(input);
+  assert.equal(cached.title.value, "된장찌개");
+  assert.notStrictEqual(cached, duplicate);
+  assert.equal(transportCalls, 1);
+
+  await service.analyze({
+    ...input,
+    capture: { ...input.capture, sourceApp: "chrome" },
+  });
+  assert.equal(transportCalls, 2);
+
+  const stats = service.getStats();
+  assert.deepEqual(stats, {
+    requests: 4,
+    cacheHits: 1,
+    cacheMisses: 3,
+    cacheExpirations: 0,
+    cacheEvictions: 0,
+    inFlightHits: 1,
+    upstreamRequests: 2,
+    upstreamSuccesses: 2,
+    upstreamFailures: 0,
+    queueRejections: 0,
+    queueTimeouts: 0,
+    inputTokens: 120,
+    cachedInputTokens: 20,
+    outputTokens: 30,
+    reasoningTokens: 10,
+    maxActive: 4,
+    maxQueued: 8,
+    queueTimeoutMs: 30_000,
+    highWater: 1,
+    activeUpstreamRequests: 0,
+    queuedUpstreamRequests: 0,
+    inFlightRequests: 0,
+    cacheEntries: 2,
+  });
+  assert.ok(Object.values(stats).every((value) => Number.isFinite(value)));
+  assert.doesNotMatch(JSON.stringify(stats), /capture|image|key|instagram/i);
+});
+
+test("serves a cache hit before acquiring a busy upstream slot", async () => {
+  const blockingResponse = deferred();
+  let transportCalls = 0;
+  const service = createAnalysisService({
+    maxConcurrent: 1,
+    maxQueued: 1,
+    transport: {
+      createResponse() {
+        transportCalls += 1;
+        return transportCalls === 2
+          ? blockingResponse.promise
+          : completedResponse();
+      },
+    },
+  });
+
+  await service.analyze(uniqueInput(0));
+  const blockingAnalysis = service.analyze(uniqueInput(1));
+  const queuedAnalysis = service.analyze(uniqueInput(2));
+  await nextTurn();
+  assert.equal(service.getStats().activeUpstreamRequests, 1);
+  assert.equal(service.getStats().queuedUpstreamRequests, 1);
+
+  const turnPassed = Symbol("turn-passed");
+  const cached = await Promise.race([
+    service.analyze(uniqueInput(0)),
+    nextTurn().then(() => turnPassed),
+  ]);
+  assert.notEqual(cached, turnPassed);
+  assert.equal(cached.title.value, "된장찌개");
+  assert.equal(transportCalls, 2);
+  assert.equal(service.getStats().queuedUpstreamRequests, 1);
+  assert.equal(service.getStats().queueRejections, 0);
+
+  blockingResponse.resolve(completedResponse());
+  await Promise.all([blockingAnalysis, queuedAnalysis]);
+});
+
+test("rejects new work when the bounded FIFO queue is full", async () => {
+  const started = [];
+  const pending = [];
+  const service = createAnalysisService({
+    maxConcurrent: 1,
+    maxQueued: 2,
+    queueTimeoutMs: 1_000,
+    transport: {
+      createResponse(body) {
+        started.push(body.input[0].content[1].image_url);
+        const response = deferred();
+        pending.push(response);
+        return response.promise;
+      },
+    },
+  });
+
+  const active = service.analyze(uniqueInput(0));
+  const firstQueued = service.analyze(uniqueInput(1));
+  const secondQueued = service.analyze(uniqueInput(2));
+  await nextTurn();
+
+  await assert.rejects(
+    service.analyze(uniqueInput(3)),
+    (error) =>
+      error instanceof OpenAITransportError &&
+      error.kind === "rate_limited" &&
+      error.retryable === true,
+  );
+  assert.deepEqual(started.map((url) => url.at(-1)), ["0"]);
+  assert.equal(service.getStats().queuedUpstreamRequests, 2);
+  assert.equal(service.getStats().queueRejections, 1);
+  assert.equal(service.getStats().maxQueued, 2);
+  assert.equal(service.getStats().queueTimeoutMs, 1_000);
+
+  pending[0].resolve(completedResponse());
+  await nextTurn();
+  assert.deepEqual(started.map((url) => url.at(-1)), ["0", "1"]);
+  pending[1].resolve(completedResponse());
+  await nextTurn();
+  assert.deepEqual(started.map((url) => url.at(-1)), ["0", "1", "2"]);
+  pending[2].resolve(completedResponse());
+
+  await Promise.all([active, firstQueued, secondQueued]);
+  assert.equal(service.getStats().queuedUpstreamRequests, 0);
+  assert.equal(service.getStats().queueTimeouts, 0);
+});
+
+test("removes an expired waiter so later work can proceed", async () => {
+  const started = [];
+  const pending = [];
+  const service = createAnalysisService({
+    maxConcurrent: 1,
+    maxQueued: 1,
+    queueTimeoutMs: 10,
+    transport: {
+      createResponse(body) {
+        started.push(body.input[0].content[1].image_url);
+        const response = deferred();
+        pending.push(response);
+        return response.promise;
+      },
+    },
+  });
+
+  const active = service.analyze(uniqueInput(0));
+  const expired = service.analyze(uniqueInput(1));
+  await nextTurn();
+  assert.equal(service.getStats().queuedUpstreamRequests, 1);
+
+  await assert.rejects(
+    expired,
+    (error) =>
+      error instanceof OpenAITransportError &&
+      error.kind === "timeout" &&
+      error.retryable === true,
+  );
+  assert.equal(service.getStats().queuedUpstreamRequests, 0);
+  assert.equal(service.getStats().queueTimeouts, 1);
+
+  const following = service.analyze(uniqueInput(2));
+  assert.equal(service.getStats().queuedUpstreamRequests, 1);
+  pending[0].resolve(completedResponse());
+  await nextTurn();
+  assert.deepEqual(started.map((url) => url.at(-1)), ["0", "2"]);
+  pending[1].resolve(completedResponse());
+
+  await Promise.all([active, following]);
+  assert.equal(service.getStats().queuedUpstreamRequests, 0);
+  assert.equal(service.getStats().upstreamRequests, 2);
+});
+
+test("requires positive integer queue bounds", () => {
+  const transport = {
+    async createResponse() {
+      return completedResponse();
+    },
+  };
+
+  assert.throws(
+    () => createAnalysisService({ transport, maxQueued: 0 }),
+    /maxQueued must be a positive integer/,
+  );
+  assert.throws(
+    () => createAnalysisService({ transport, queueTimeoutMs: 1.5 }),
+    /queueTimeoutMs must be a positive integer/,
+  );
+});
+
+test("limits upstream work to four requests and admits queued work FIFO", async () => {
+  const started = [];
+  const pending = [];
+  const service = createAnalysisService({
+    transport: {
+      createResponse(body) {
+        started.push(body.input[0].content[1].image_url);
+        const response = deferred();
+        pending.push(response);
+        return response.promise;
+      },
+    },
+  });
+
+  const analyses = Array.from({ length: 6 }, (_, index) =>
+    service.analyze(uniqueInput(index)),
+  );
+  const queuedDuplicate = service.analyze(uniqueInput(4));
+  await nextTurn();
+
+  assert.deepEqual(started.map((url) => url.at(-1)), ["0", "1", "2", "3"]);
+  assert.deepEqual(
+    {
+      active: service.getStats().activeUpstreamRequests,
+      queued: service.getStats().queuedUpstreamRequests,
+      inFlight: service.getStats().inFlightRequests,
+      deduplicated: service.getStats().inFlightHits,
+    },
+    { active: 4, queued: 2, inFlight: 6, deduplicated: 1 },
+  );
+
+  pending[1].resolve(completedResponse());
+  await nextTurn();
+  assert.deepEqual(started.map((url) => url.at(-1)), ["0", "1", "2", "3", "4"]);
+
+  pending[0].resolve(completedResponse());
+  await nextTurn();
+  assert.deepEqual(started.map((url) => url.at(-1)), [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+  ]);
+
+  for (const response of pending.slice(2)) {
+    response.resolve(completedResponse());
+  }
+  await Promise.all([...analyses, queuedDuplicate]);
+
+  const stats = service.getStats();
+  assert.equal(stats.requests, 7);
+  assert.equal(stats.maxActive, 4);
+  assert.equal(stats.highWater, 4);
+  assert.equal(stats.upstreamRequests, 6);
+  assert.equal(stats.upstreamSuccesses, 6);
+  assert.equal(stats.activeUpstreamRequests, 0);
+  assert.equal(stats.queuedUpstreamRequests, 0);
+});
+
+test("does not cache failed analysis attempts", async () => {
+  let transportCalls = 0;
+  const service = createAnalysisService({
+    transport: {
+      async createResponse() {
+        transportCalls += 1;
+        if (transportCalls === 1) {
+          throw new OpenAITransportError("upstream", { retryable: true });
+        }
+        return completedResponse();
+      },
+    },
+  });
+
+  await assert.rejects(
+    service.analyze(input),
+    (error) =>
+      error instanceof OpenAITransportError && error.kind === "upstream",
+  );
+  await service.analyze(input);
+  await service.analyze(input);
+
+  assert.equal(transportCalls, 2);
+  assert.deepEqual(
+    {
+      cacheHits: service.getStats().cacheHits,
+      entries: service.getStats().cacheEntries,
+      successes: service.getStats().upstreamSuccesses,
+      failures: service.getStats().upstreamFailures,
+    },
+    { cacheHits: 1, entries: 1, successes: 1, failures: 1 },
+  );
+});
+
+test("expires successful cache entries after 24 hours", async () => {
+  const ttlMs = 24 * 60 * 60 * 1000;
+  let currentTime = 1_000;
+  let transportCalls = 0;
+  const service = createAnalysisService({
+    now: () => currentTime,
+    transport: {
+      async createResponse() {
+        transportCalls += 1;
+        return completedResponse();
+      },
+    },
+  });
+
+  await service.analyze(input);
+  currentTime += ttlMs - 1;
+  await service.analyze(input);
+  assert.equal(transportCalls, 1);
+
+  currentTime += 1;
+  await service.analyze(input);
+  assert.equal(transportCalls, 2);
+  assert.equal(service.getStats().cacheExpirations, 1);
+  assert.equal(service.getStats().cacheEntries, 1);
+});
+
+test("keeps the configured number of successful results using LRU eviction", async () => {
+  let transportCalls = 0;
+  const service = createAnalysisService({
+    cacheMax: 3,
+    transport: {
+      async createResponse() {
+        transportCalls += 1;
+        return completedResponse();
+      },
+    },
+  });
+
+  for (let index = 0; index < 3; index += 1) {
+    await service.analyze(uniqueInput(index));
+  }
+  await service.analyze(uniqueInput(0));
+  await service.analyze(uniqueInput(3));
+  await service.analyze(uniqueInput(0));
+  await service.analyze(uniqueInput(1));
+
+  const stats = service.getStats();
+  assert.equal(transportCalls, 5);
+  assert.equal(stats.cacheEntries, 3);
+  assert.equal(stats.cacheEvictions, 2);
+  assert.equal(stats.cacheHits, 2);
+});
+
+function uniqueInput(index) {
+  return {
+    ...input,
+    imageBase64: `${JPEG_BASE64}${index}`,
+  };
+}
+
+function completedResponse(usage) {
+  return {
+    output_text: JSON.stringify(makeValidAnalysis()),
+    ...(usage === undefined ? {} : { usage }),
+  };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function nextTurn() {
+  return new Promise((resolve) => setImmediate(resolve));
+}

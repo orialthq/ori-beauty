@@ -41,6 +41,14 @@ final class IncomingCaptureBatch {
 }
 
 final class AppController extends ChangeNotifier {
+  /// Keeps image decoding, base64 payloads, and upstream requests bounded on a
+  /// phone while still letting a large picker batch make progress in parallel.
+  static const maxConcurrentCaptureAnalyses = 3;
+
+  /// Place lookup is optional follow-up work and stays strictly serial so a
+  /// place-heavy picker batch cannot fan out into another request burst.
+  static const maxConcurrentPlaceEnrichments = 1;
+
   AppController(
     this._incomingShareService, [
     this._contentAnalysisService = const BaselineContentAnalysisService(),
@@ -90,9 +98,13 @@ final class AppController extends ChangeNotifier {
   StreamSubscription<void>? _portableTipSubscription;
   Future<void> _snapshotWriteTail = Future<void>.value();
   Future<void> _incomingDrainTail = Future<void>.value();
-  Future<void> _analysisTail = Future<void>.value();
   Future<void> _portableTipDrainTail = Future<void>.value();
+  final Queue<String> _pendingAnalysisIds = Queue<String>();
   final Set<String> _queuedAnalysisIds = {};
+  var _activeAnalysisCount = 0;
+  final Queue<String> _pendingPlaceEnrichmentIds = Queue<String>();
+  final Set<String> _queuedPlaceEnrichmentIds = {};
+  var _activePlaceEnrichmentCount = 0;
   CaptureFilter _filter = CaptureFilter.all;
   Future<void>? _initialization;
 
@@ -904,24 +916,39 @@ final class AppController extends ChangeNotifier {
     }
   }
 
-  /// Runs remote image analysis one at a time without holding the incoming
-  /// share drain lock. A 100-photo batch is persisted and acknowledged first,
-  /// so another picker/share can be accepted while this queue keeps working.
+  /// Runs a small FIFO pool without holding the incoming-share drain lock.
+  /// A picker batch is persisted and acknowledged before it reaches this
+  /// queue, and [maxConcurrentCaptureAnalyses] prevents a large batch from
+  /// turning into the same number of simultaneous image requests.
   void _queueCaptureAnalysis(Iterable<String> captureIds) {
     for (final captureId in captureIds) {
       if (!_queuedAnalysisIds.add(captureId)) continue;
-      _analysisTail = _analysisTail.then((_) async {
-        try {
-          await _analyzeCapture(captureId);
-        } catch (error, stackTrace) {
-          debugPrint(
-            'Queued content analysis failed unexpectedly: '
-            '$error\n$stackTrace',
-          );
-        } finally {
-          _queuedAnalysisIds.remove(captureId);
-        }
-      });
+      _pendingAnalysisIds.addLast(captureId);
+    }
+    _startQueuedCaptureAnalyses();
+  }
+
+  void _startQueuedCaptureAnalyses() {
+    while (_activeAnalysisCount < maxConcurrentCaptureAnalyses &&
+        _pendingAnalysisIds.isNotEmpty) {
+      final captureId = _pendingAnalysisIds.removeFirst();
+      _activeAnalysisCount += 1;
+      unawaited(_runQueuedCaptureAnalysis(captureId));
+    }
+  }
+
+  Future<void> _runQueuedCaptureAnalysis(String captureId) async {
+    try {
+      await _analyzeCapture(captureId);
+    } catch (error, stackTrace) {
+      debugPrint(
+        'Queued content analysis failed unexpectedly: '
+        '$error\n$stackTrace',
+      );
+    } finally {
+      _queuedAnalysisIds.remove(captureId);
+      _activeAnalysisCount -= 1;
+      _startQueuedCaptureAnalyses();
     }
   }
 
@@ -976,15 +1003,53 @@ final class AppController extends ChangeNotifier {
     }
     await _persistState();
     notifyListeners();
-    unawaited(_enrichPlace(captureId));
+    _queuePlaceEnrichment(captureId);
+  }
+
+  void _queuePlaceEnrichment(String captureId) {
+    if (_attemptedPlaceEnrichment.contains(captureId) ||
+        _queuedPlaceEnrichmentIds.contains(captureId)) {
+      return;
+    }
+    final placeName = captureById(
+      captureId,
+    )?.analysis?.structuredContent?.place?.name?.trim();
+    if (placeName == null || placeName.isEmpty) {
+      return;
+    }
+    _queuedPlaceEnrichmentIds.add(captureId);
+    _pendingPlaceEnrichmentIds.addLast(captureId);
+    _startQueuedPlaceEnrichments();
+  }
+
+  void _startQueuedPlaceEnrichments() {
+    while (_activePlaceEnrichmentCount < maxConcurrentPlaceEnrichments &&
+        _pendingPlaceEnrichmentIds.isNotEmpty) {
+      final captureId = _pendingPlaceEnrichmentIds.removeFirst();
+      _activePlaceEnrichmentCount += 1;
+      unawaited(_runQueuedPlaceEnrichment(captureId));
+    }
+  }
+
+  Future<void> _runQueuedPlaceEnrichment(String captureId) async {
+    try {
+      await _enrichPlace(captureId);
+    } catch (error, stackTrace) {
+      // An optional lookup must never strand the remaining FIFO behind it.
+      debugPrint('Place enrichment failed unexpectedly: $error\n$stackTrace');
+    } finally {
+      _queuedPlaceEnrichmentIds.remove(captureId);
+      _activePlaceEnrichmentCount -= 1;
+      _startQueuedPlaceEnrichments();
+    }
   }
 
   /// Adds the tags a screenshot cannot carry, once the capture is already saved
   /// and visible.
   ///
-  /// Deliberately not awaited by the analysis: the reader sees the screenshot's
-  /// own findings immediately, and web tags arrive on top a few seconds later.
-  /// A capture with no place, or one already looked up, costs nothing.
+  /// The independent one-worker queue calls this only after the screenshot's
+  /// own findings are persisted and visible. Web tags can therefore arrive a
+  /// few seconds later without occupying an image-analysis worker.
   Future<void> _enrichPlace(String captureId) async {
     if (!_attemptedPlaceEnrichment.add(captureId)) {
       return;

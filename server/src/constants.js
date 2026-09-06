@@ -24,7 +24,11 @@ export const SCHEMA_VERSION = "2.1";
 export const DEFAULT_MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 export const DEFAULT_MAX_BODY_BYTES = 17 * 1024 * 1024;
 export const DEFAULT_BODY_TIMEOUT_MS = 10_000;
-export const DEFAULT_ANALYSIS_TIMEOUT_MS = 45_000;
+// Original-detail screenshots can legitimately take more than 40 seconds.
+// Keep the nested limits ordered so a paid upstream request gets time to
+// finish before the service and mobile client give up.
+export const DEFAULT_OPENAI_TIMEOUT_MS = 75_000;
+export const DEFAULT_ANALYSIS_TIMEOUT_MS = 80_000;
 export const DEFAULT_UPSTREAM_TIMEOUT_MS = 40_000;
 export const DEFAULT_MAX_UPSTREAM_BODY_BYTES = 2 * 1024 * 1024;
 

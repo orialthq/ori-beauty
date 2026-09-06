@@ -27,6 +27,7 @@ export function createHttpServer({
   // Reported by /health so a comparison run can confirm which provider answered
   // rather than inferring it from the labels.
   enrichmentModel = MODEL,
+  analysisStatsEnabled = false,
   maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
   maxImageBytes = DEFAULT_MAX_IMAGE_BYTES,
   bodyTimeoutMs = DEFAULT_BODY_TIMEOUT_MS,
@@ -67,12 +68,18 @@ export function createHttpServer({
         if (request.method !== "GET") {
           throw methodNotAllowed("GET");
         }
+        const analysis =
+          analysisStatsEnabled &&
+          typeof analysisService.getStats === "function"
+            ? analysisService.getStats()
+            : null;
         return sendJson(response, 200, {
           status: "ok",
           service: "ori-capture-analysis",
           schemaVersion: SCHEMA_VERSION,
           model: MODEL,
           enrichmentModel,
+          ...(analysis === null ? {} : { analysis }),
         });
       }
 

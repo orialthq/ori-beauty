@@ -1,6 +1,6 @@
 import {
   DEFAULT_MAX_UPSTREAM_BODY_BYTES,
-  DEFAULT_UPSTREAM_TIMEOUT_MS,
+  DEFAULT_OPENAI_TIMEOUT_MS,
 } from "./constants.js";
 import { OpenAITransportError } from "./errors.js";
 
@@ -8,7 +8,7 @@ export function createOpenAITransport({
   apiKey,
   fetchImpl = globalThis.fetch,
   baseUrl = "https://api.openai.com/v1",
-  timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
+  timeoutMs = DEFAULT_OPENAI_TIMEOUT_MS,
   maxResponseBytes = DEFAULT_MAX_UPSTREAM_BODY_BYTES,
 } = {}) {
   if (typeof apiKey !== "string" || apiKey.length === 0) {

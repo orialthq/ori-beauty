@@ -42,6 +42,42 @@ test("health endpoint exposes only non-sensitive service metadata", async (t) =>
   assert.equal(response.headers.get("cache-control"), "no-store");
 });
 
+test("health exposes only the analysis service's aggregate counters", async (t) => {
+  const baseUrl = await startServer(t, {
+    analysisStatsEnabled: true,
+    analysisService: {
+      async analyze() {
+        return makeValidAnalysis();
+      },
+      getStats() {
+        return {
+          requests: 7,
+          cacheHits: 2,
+          activeUpstreamRequests: 1,
+          queuedUpstreamRequests: 3,
+          inputTokens: 12_345,
+          cachedInputTokens: 10_000,
+        };
+      },
+    },
+  });
+
+  const response = await fetch(`${baseUrl}/health`);
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.analysis, {
+    requests: 7,
+    cacheHits: 2,
+    activeUpstreamRequests: 1,
+    queuedUpstreamRequests: 3,
+    inputTokens: 12_345,
+    cachedInputTokens: 10_000,
+  });
+  assert.equal(JSON.stringify(body).includes("imageBase64"), false);
+  assert.equal(JSON.stringify(body).includes("capture-001"), false);
+});
+
 test("validates and forwards a supported image without a paid call", async (t) => {
   let received;
   const expected = makeValidAnalysis();
